@@ -1,0 +1,148 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Researcher {
+  id               String   @id @default(uuid())
+  handle           String   @unique
+  did              String   @unique
+  displayName      String
+  bio              String?
+  orcidId          String?  @unique
+  linkedinUrl      String?
+  avatarUrl        String?
+  affiliations     String[]
+  researchInterests String[]
+  careerStage      String   @default("EARLY_CAREER")
+  fieldOfStudy     String?
+  
+  sbts             SoulboundToken[]
+  impactScores     ImpactScore[]
+  zkProofs         ZkProof[]
+  affilRecords     Affiliation[]
+  connectedApps    ConnectedApp[]
+  walletLinks      WalletLink[]
+  recoveryShards   RecoveryShard[]
+  auditLogs        AuditLog[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SoulboundToken {
+  id             String   @id @default(uuid())
+  researcher     Researcher @relation(fields: [researcherId], references: [id])
+  researcherId   String
+  credentialType String
+  title          String
+  issuer         String
+  issuerDid      String?
+  metadataUri    String?
+  fieldOfStudy   String?
+  tone           String   @default("default")
+  issuedAt       DateTime @default(now())
+  expiresAt      DateTime?
+  revoked        Boolean  @default(false)
+  revokedAt      DateTime?
+  onChainTxHash  String?
+  
+  @@index([researcherId])
+}
+
+model ImpactScore {
+  id           String   @id @default(uuid())
+  researcher   Researcher @relation(fields: [researcherId], references: [id])
+  researcherId String
+  totalScore   Float
+  pillars      Json
+  bonuses      Float    @default(0)
+  penalty      Float    @default(0)
+  calculatedAt DateTime @default(now())
+  
+  @@index([researcherId])
+}
+
+model ZkProof {
+  id             String   @id @default(uuid())
+  researcher     Researcher @relation(fields: [researcherId], references: [id])
+  researcherId   String
+  appName        String
+  claims         Json
+  consentWindow  String
+  proofHash      String
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime?
+  
+  @@index([researcherId, status])
+}
+
+model Affiliation {
+  id               String   @id @default(uuid())
+  researcher       Researcher @relation(fields: [researcherId], references: [id])
+  researcherId     String
+  organizationName String
+  role             String
+  department       String?
+  status           String   @default("pending")
+  issuedBy         String?
+  issuedAt         DateTime @default(now())
+  expiresAt        DateTime?
+  sbtId            String?
+  
+  @@index([researcherId])
+}
+
+model ConnectedApp {
+  id           String   @id @default(uuid())
+  researcher   Researcher @relation(fields: [researcherId], references: [id])
+  researcherId String
+  appName      String
+  scopes       String[]
+  status       String   @default("connected")
+  connectedAt  DateTime @default(now())
+  
+  @@index([researcherId])
+}
+
+model WalletLink {
+  id           String   @id @default(uuid())
+  researcher   Researcher @relation(fields: [researcherId], references: [id])
+  researcherId String
+  address      String
+  chain        String
+  isPrimary    Boolean  @default(false)
+  label        String?
+  connectedAt  DateTime @default(now())
+  
+  @@index([researcherId])
+}
+
+model RecoveryShard {
+  id           String   @id @default(uuid())
+  researcher   Researcher @relation(fields: [researcherId], references: [id])
+  researcherId String
+  guardianName String
+  guardianKind String
+  status       String   @default("pending")
+  sentAt       DateTime?
+  
+  @@index([researcherId])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  researcher   Researcher @relation(fields: [researcherId], references: [id])
+  researcherId String
+  action       String
+  appName      String?
+  claims       String?
+  timestamp    DateTime @default(now())
+  
+  @@index([researcherId])
+}

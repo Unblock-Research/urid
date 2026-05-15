@@ -1,0 +1,10 @@
+{
+  "name": "@urid/mobile",
+  "private": true,
+  "scripts": { "ios": "expo start --ios", "android": "expo start --android" },
+  "dependencies": {
+    "expo": "~52.0.0", "react": "^19.0.0", "react-native": "^0.76.0",
+    "@react-navigation/native": "^7.0.0", "@react-navigation/bottom-tabs": "^7.0.0"
+  },
+  "devDependencies": { "typescript": "^5.8.0" }
+}

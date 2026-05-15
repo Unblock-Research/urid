@@ -1,0 +1,11 @@
+{
+  "name": "urid",
+  "private": true,
+  "description": "Universal Researcher Identity — Web + iOS + Android",
+  "scripts": {
+    "dev:web": "pnpm --filter @urid/web dev",
+    "dev:api": "pnpm --filter @urid/api dev",
+    "build:web": "pnpm --filter @urid/web build",
+    "build:api": "pnpm --filter @urid/api build"
+  }
+}

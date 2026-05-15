@@ -1,0 +1,1 @@
+export interface Researcher { id: string; handle: string; did: string; displayName: string; bio?: string; orcidId?: string; affiliations: string[]; researchInterests: string[]; careerStage: string; fieldOfStudy?: string; }
