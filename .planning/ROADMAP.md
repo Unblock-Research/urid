@@ -119,7 +119,11 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
   1. Sending a request body with a missing required field to any controller returns HTTP 400 with a structured validation error — not a 500 Internal Server Error
   2. Unit tests pass for: Ed25519 keygen/sign/verify, ledger hash-chain integrity, Shamir round-trip, credential sign/verify, Groth16 prove→verify (including a negative non-member case), and impact scoring with mocked HTTP responses
   3. The integration test `register → mint credential → generate disclosure proof → verify` completes end-to-end without errors and all assertions pass
-**Plans**: TBD
+**Plans**: 4 plans
+- [ ] 08-01-PLAN.md — Custom ZodValidationPipe (zod, no new dep) + pipe unit test [HRD-01, HRD-02]
+- [ ] 08-02-PLAN.md — DTO schemas + wiring for core-flow controllers (identity, credentials, zk-proofs) [HRD-01]
+- [ ] 08-03-PLAN.md — DTO schemas + wiring for aux controllers (affiliations, wallet, impact param) — 6-of-6 coverage [HRD-01]
+- [ ] 08-04-PLAN.md — End-to-end real-crypto integration test (register→mint→prove→verify) + mint Merkle-depth alignment + full-suite/tsc green gate [HRD-02, HRD-03]
 
 ## Progress
 
@@ -137,4 +141,4 @@ Phases 3+4, 5+6, and 7 can execute in parallel after Phase 2 completes. Phase 8 
 | 5. Verifiable Credentials | 0/2 | Not started | - |
 | 6. zk-SNARK Selective Disclosure | 0/3 | Not started | - |
 | 7. Real Impact Score | 0/3 | Not started | - |
-| 8. Hardening | 0/TBD | Not started | - |
+| 8. Hardening | 0/4 | Not started | - |
