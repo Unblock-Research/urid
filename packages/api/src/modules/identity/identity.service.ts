@@ -1,11 +1,15 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { LedgerService } from "../../ledger/ledger.service";
 
 @Injectable()
 export class IdentityService {
   private readonly logger = new Logger(IdentityService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private ledger: LedgerService,
+  ) {}
 
   async register(data: { handle: string; displayName: string; did?: string }) {
     const hash = Array.from(data.handle).reduce((a, c) => a + c.charCodeAt(0), 0);
@@ -19,14 +23,7 @@ export class IdentityService {
     });
     this.logger.log(`Registered: @${data.handle} → ${did}`);
 
-    // Register DID on chain
-    try {
-      await fetch("http://localhost:9000/rpc/send_transaction", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tx_bytes: JSON.stringify({ type: "register_did", handle: data.handle, did }) }),
-      });
-    } catch {}
+    await this.ledger.registerDid({ handle: data.handle, did });
 
     return researcher;
   }
