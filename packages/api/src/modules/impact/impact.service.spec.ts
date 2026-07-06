@@ -146,7 +146,7 @@ const DATASET_B = {
 };
 
 // ---------------------------------------------------------------------------
-// Tests — RED: these FAIL with the current hardcoded mock implementation
+// Tests
 // ---------------------------------------------------------------------------
 
 describe('ImpactService — Task 1 RED (calculate)', () => {
@@ -187,5 +187,45 @@ describe('ImpactService — Task 1 RED (calculate)', () => {
     // Must be a value in [0, 1] (renormalized total)
     expect(score.totalScore).toBeGreaterThanOrEqual(0);
     expect(score.totalScore).toBeLessThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 2 RED — getScore() must return { status: 'not_calculated' } when
+// no score has been persisted, not null.
+// (This FAILS until getScore() is updated in Task 2 GREEN.)
+// ---------------------------------------------------------------------------
+
+describe('ImpactService — Task 2 RED (getScore)', () => {
+  it('returns { status: "not_calculated" } when no score persisted for a known researcher', async () => {
+    const prisma = makeInMemoryPrisma({ id: 'r-nc', did: 'did:ub:no-calc', orcidId: '0000-0001-9999-0000' });
+    const svc = new (ImpactService as any)(
+      prisma,
+      makeOrcidMock([], 0, 0),
+      makeCrossrefMock(new Map()),
+    );
+
+    const result = await svc.getScore('did:ub:no-calc');
+
+    // Must NOT be null — must be a clear not-calculated state
+    expect(result).not.toBeNull();
+    expect((result as any).status).toBe('not_calculated');
+  });
+
+  it('returns the persisted ImpactScore after calculate() is called', async () => {
+    const prisma = makeInMemoryPrisma(DATASET_A.researcher);
+    const svc = new (ImpactService as any)(
+      prisma,
+      makeOrcidMock(DATASET_A.works, DATASET_A.reviewCount, DATASET_A.fundingCount),
+      makeCrossrefMock(DATASET_A.citationMap),
+    );
+
+    const calculated = await svc.calculate(DATASET_A.researcher.did);
+    const retrieved = await svc.getScore(DATASET_A.researcher.did);
+
+    expect(retrieved).not.toBeNull();
+    expect((retrieved as any).status).toBeUndefined(); // not a 'not_calculated' stub
+    expect((retrieved as any).id).toBe(calculated.id);
+    expect((retrieved as any).totalScore).toBeCloseTo(calculated.totalScore, 10);
   });
 });
