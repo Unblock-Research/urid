@@ -56,7 +56,8 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
   2. The `Researcher` record in the database has a non-null `publicKey`; no raw private key field is persisted in the database
   3. A `LedgerTransaction` of type `registerDid` exists for the new DID immediately after a successful registration call
   4. Calling `register` a second time with the same handle returns a conflict error (deduplication still functions correctly)
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 03-01-PLAN.md — Rewrite register(): real Ed25519 keypair + did:ub DID, store publicKey, return privateKey once, ledger-anchor; delete char-code DID + did override [IDN-01, IDN-02, IDN-03]
 
 ### Phase 4: Shamir Recovery
 **Goal**: Social recovery splits the recovery secret into N Shamir shares with threshold T, encrypted per guardian; reconstructing with ≥T valid shares succeeds and with <T shares fails
@@ -121,7 +122,7 @@ Phases 3+4, 5+6, and 7 can execute in parallel after Phase 2 completes. Phase 8 
 |-------|----------------|--------|-----------|
 | 1. Schema + Crypto Foundation | 0/5 | Not started | - |
 | 2. Ledger Abstraction | 0/TBD | Not started | - |
-| 3. Real DIDs + Keys | 0/TBD | Not started | - |
+| 3. Real DIDs + Keys | 0/1 | Not started | - |
 | 4. Shamir Recovery | 0/TBD | Not started | - |
 | 5. Verifiable Credentials | 0/TBD | Not started | - |
 | 6. zk-SNARK Selective Disclosure | 0/TBD | Not started | - |
