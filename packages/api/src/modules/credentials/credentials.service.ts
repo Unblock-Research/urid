@@ -1,10 +1,15 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { LedgerService } from "../../ledger/ledger.service";
 
 @Injectable()
 export class CredentialsService {
   private readonly logger = new Logger(CredentialsService.name);
-  constructor(private prisma: PrismaService) {}
+
+  constructor(
+    private prisma: PrismaService,
+    private ledger: LedgerService,
+  ) {}
 
   async mint(data: { researcherDid: string; credentialType: string; title: string; issuer: string; tone?: string; fieldOfStudy?: string }) {
     const researcher = await this.prisma.researcher.findUnique({ where: { did: data.researcherDid } });
@@ -14,15 +19,8 @@ export class CredentialsService {
       data: { researcherId: researcher.id, credentialType: data.credentialType, title: data.title, issuer: data.issuer, tone: data.tone || "default", fieldOfStudy: data.fieldOfStudy },
     });
 
-    // Record on chain
-    try {
-      const resp = await fetch("http://localhost:9000/rpc/send_transaction", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tx_bytes: JSON.stringify({ type: "mint_sbt", holder: data.researcherDid, credential: data.credentialType, title: data.title }) }),
-      });
-      const chain: any = await resp.json();
-      await this.prisma.soulboundToken.update({ where: { id: sbt.id }, data: { onChainTxHash: chain.digest } });
-    } catch {}
+    const record = await this.ledger.mintSbt({ holder: data.researcherDid, credential: data.credentialType, title: data.title });
+    await this.prisma.soulboundToken.update({ where: { id: sbt.id }, data: { onChainTxHash: record.txHash } });
 
     this.logger.log(`SBT minted: ${data.credentialType} for ${data.researcherDid}`);
     return sbt;
