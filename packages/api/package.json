@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "ts-node src/main.ts",
     "build": "tsc",
+    "build:circuit": "bash scripts/build-circuit.sh",
     "test": "vitest run"
   },
   "dependencies": {
@@ -16,12 +17,14 @@
     "@noble/hashes": "^1.8.0",
     "@prisma/client": "^6.11.0",
     "axios": "^1.6.0",
+    "circomlib": "^2.0.5",
     "circomlibjs": "^0.1.7",
     "express": "^5.0.0",
     "multiformats": "^13.4.2",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.0",
     "shamir-secret-sharing": "^0.0.4",
+    "snarkjs": "^0.7.6",
     "zod": "^3.25.0"
   },
   "devDependencies": {
