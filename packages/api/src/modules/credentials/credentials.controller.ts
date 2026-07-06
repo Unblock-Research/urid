@@ -8,13 +8,43 @@ export class CredentialsController {
   constructor(private svc: CredentialsService) {}
 
   @Post("mint")
-  mint(@Body() body: { researcherDid: string; credentialType: string; title: string; issuer: string; tone?: string }) {
+  mint(
+    @Body()
+    body: {
+      researcherDid: string;
+      credentialType: string;
+      title: string;
+      issuer: string;
+      tone?: string;
+    },
+  ) {
     return this.svc.mint(body);
   }
 
+  /**
+   * GET credentials/:id/verify
+   *
+   * Independently verify that the stored credential identified by `:id` has not
+   * been tampered with and that its issuer signature is valid.
+   *
+   * Note: the two-segment path `/:id/verify` does NOT shadow the existing
+   * single-segment `@Get(":did")` route — NestJS resolves by specificity.
+   *
+   * Returns: { id: string, valid: boolean }
+   */
+  @Get(":id/verify")
+  async verify(@Param("id") id: string) {
+    const { valid } = await this.svc.verifyCredential(id);
+    return { id, valid };
+  }
+
   @Get(":did")
-  list(@Param("did") did: string) { return this.svc.listByDid(did); }
+  list(@Param("did") did: string) {
+    return this.svc.listByDid(did);
+  }
 
   @Post(":id/revoke")
-  revoke(@Param("id") id: string) { return this.svc.revoke(id); }
+  revoke(@Param("id") id: string) {
+    return this.svc.revoke(id);
+  }
 }
