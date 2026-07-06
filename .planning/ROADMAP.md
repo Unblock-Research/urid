@@ -43,7 +43,9 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
   1. `LedgerService` exposes `registerDid`, `mintSbt`, `revokeSbt`, and `getTransaction`; any call that fails propagates an error to the caller (no silent swallowing)
   2. The local ledger appends transactions where each `txHash = sha256(canonical(tx) + prevHash)`; fetching two consecutive transactions shows the second tx's `prevHash` equals the first tx's `txHash`
   3. `identity.service.ts` and `credentials.service.ts` contain no references to `http://localhost:9000` and no bare `catch {}` blocks that hide ledger failures
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 02-01-PLAN.md — LedgerService interface + hash-chained LocalLedgerService + LedgerModule [LDG-01, LDG-02]
+- [ ] 02-02-PLAN.md — Rewire identity/credentials to inject LedgerService; delete mock fetch + swallowed catch; store real txHash [LDG-03]
 
 ### Phase 3: Real DIDs + Keys
 **Goal**: Researcher registration generates a genuine Ed25519 keypair, derives the DID from the public key via multibase encoding, stores the public key, returns the private key exactly once, and anchors the DID on the ledger
