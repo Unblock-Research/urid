@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 5
-current_phase_name: Verifiable Credentials
+current_phase: 6
+current_phase_name: zk-SNARK Selective Disclosure
 status: executing
 stopped_at: Roadmap and STATE.md created; REQUIREMENTS.md traceability filled; ready to plan Phase 1
-last_updated: "2026-07-06T20:40:01.007Z"
+last_updated: "2026-07-06T21:08:04.464Z"
 last_activity: 2026-07-06
-last_activity_desc: Phase 5 execution started
+last_activity_desc: Phase 6 execution started
 progress:
   total_phases: 8
-  completed_phases: 4
-  total_plans: 10
-  completed_plans: 10
-  percent: 50
+  completed_phases: 5
+  total_plans: 12
+  completed_plans: 12
+  percent: 63
 ---
 
 # Project State
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-07)
 
 **Core value:** A researcher holds verifiable credentials on a cryptographic identity they control and selectively proves claims without a trusted intermediary — backed by real cryptography, not mocks.
-**Current focus:** Phase 5 — Verifiable Credentials
+**Current focus:** Phase 6 — zk-SNARK Selective Disclosure
 
 ## Current Position
 
-Phase: 5 (Verifiable Credentials) — EXECUTING
+Phase: 6 (zk-SNARK Selective Disclosure) — EXECUTING
 Plan: 1 of ?
-Status: Executing Phase 5
-Last activity: 2026-07-06 — Phase 5 execution started
+Status: Executing Phase 6
+Last activity: 2026-07-06 — Phase 6 execution started
 
 Progress: [░░░░░░░░░░] 0%
 

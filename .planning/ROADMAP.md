@@ -12,7 +12,7 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
 - [x] **Phase 2: Ledger Abstraction** - Implement `LedgerService` interface + tamper-evident hash-chained local ledger; eliminate all fire-and-forget `fetch` calls ✓ verified 2026-07-07 (mock fetch/catch removed)
 - [x] **Phase 3: Real DIDs + Keys** - Registration generates real Ed25519 keypairs, derives DID from public key, anchors via ledger ✓ verified 2026-07-07 (char-code DID removed)
 - [x] **Phase 4: Shamir Recovery** - Social recovery backed by real Shamir secret sharing with T-of-N encrypted per-guardian shares ✓ verified 2026-07-07 (no-leak confirmed)
-- [ ] **Phase 5: Verifiable Credentials** - SBTs become signed VCs with Poseidon-Merkle claim commitment and issuer Ed25519 signature over the root
+- [x] **Phase 5: Verifiable Credentials** - SBTs become signed VCs with Poseidon-Merkle claim commitment and issuer Ed25519 signature over the root ✓ verified 2026-07-07 (recompute-based tamper detection)
 - [ ] **Phase 6: zk-SNARK Selective Disclosure** - Real Groth16 circom circuit proves Merkle membership + predicates; replaces sha256(JSON) proofs
 - [ ] **Phase 7: Real Impact Score** - 7-pillar score computed from live ORCID + Crossref data; hardcoded constants removed
 - [ ] **Phase 8: Hardening** - Zod DTO validation on all controllers; unit + integration tests across the full crypto stack

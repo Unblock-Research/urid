@@ -94,9 +94,9 @@ Deferred to future milestones. Tracked, not in this roadmap.
 | IDN-03 | Phase 3 | Complete |
 | REC-01 | Phase 4 | Complete |
 | REC-02 | Phase 4 | Complete |
-| CRD-01 | Phase 5 | Pending |
-| CRD-02 | Phase 5 | Pending |
-| CRD-03 | Phase 5 | Pending |
+| CRD-01 | Phase 5 | Complete |
+| CRD-02 | Phase 5 | Complete |
+| CRD-03 | Phase 5 | Complete |
 | ZKP-01 | Phase 6 | Pending |
 | ZKP-02 | Phase 6 | Pending |
 | ZKP-03 | Phase 6 | Pending |
