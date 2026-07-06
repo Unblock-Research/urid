@@ -1,0 +1,21 @@
+# Intermediate build artifacts — large or rebuildable, do NOT commit these.
+# Run packages/api/scripts/build-circuit.sh to regenerate them.
+
+# Powers-of-Tau (~48 MB at power 12)
+*.ptau
+
+# R1CS constraint system (regenerated from .circom source)
+*.r1cs
+
+# Symbol table (debug info, regenerated from .circom source)
+*.sym
+
+# Intermediate zkey before contribution step
+circuit_0000.zkey
+
+# ---------------------------------------------------------------
+# Do NOT add merkle_inclusion_js/merkle_inclusion.wasm
+# Do NOT add merkle_inclusion_final.zkey
+# Do NOT add verification_key.json
+# These three ARE committed as runtime artifacts.
+# ---------------------------------------------------------------
