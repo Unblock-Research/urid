@@ -1,6 +1,8 @@
 import { Controller, Get, Post, Param, Body } from "@nestjs/common";
 import { ApiTags } from "@nestjs/swagger";
 import { CredentialsService } from "./credentials.service";
+import { ZodValidationPipe } from "../../common/zod-validation.pipe";
+import { mintBodySchema, MintBody } from "./credentials.dto";
 
 @ApiTags("Credentials")
 @Controller("credentials")
@@ -9,14 +11,8 @@ export class CredentialsController {
 
   @Post("mint")
   mint(
-    @Body()
-    body: {
-      researcherDid: string;
-      credentialType: string;
-      title: string;
-      issuer: string;
-      tone?: string;
-    },
+    @Body(new ZodValidationPipe(mintBodySchema))
+    body: MintBody,
   ) {
     return this.svc.mint(body);
   }
