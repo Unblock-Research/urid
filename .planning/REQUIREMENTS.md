@@ -89,9 +89,9 @@ Deferred to future milestones. Tracked, not in this roadmap.
 | LDG-01 | Phase 2 | Complete |
 | LDG-02 | Phase 2 | Complete |
 | LDG-03 | Phase 2 | Complete |
-| IDN-01 | Phase 3 | Pending |
-| IDN-02 | Phase 3 | Pending |
-| IDN-03 | Phase 3 | Pending |
+| IDN-01 | Phase 3 | Complete |
+| IDN-02 | Phase 3 | Complete |
+| IDN-03 | Phase 3 | Complete |
 | REC-01 | Phase 4 | Pending |
 | REC-02 | Phase 4 | Pending |
 | CRD-01 | Phase 5 | Pending |
