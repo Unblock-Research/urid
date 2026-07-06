@@ -106,7 +106,10 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
   1. `GET /api/impact/:did` for a researcher with a valid ORCID iD performs real outbound HTTP calls to the ORCID and Crossref public APIs (verifiable via test mocks or network logs)
   2. Two researchers with different ORCID records and publication histories receive different computed impact scores (the same constant is not returned for all)
   3. A researcher with no publications has at least one pillar returned as `insufficient_data` rather than a positive non-zero constant
-**Plans**: TBD
+**Plans**: 3 plans
+- [ ] 07-01-PLAN.md — Injectable OrcidClient + CrossrefClient under sources/ (axios, env base URLs, mockable, graceful errors) [IMP-01]
+- [ ] 07-02-PLAN.md — Pure metrics helper: h-index over citation vector + documented [0,1] normalization curves [IMP-02]
+- [ ] 07-03-PLAN.md — Rewrite calculate()/getScore(): real 7-pillar score, insufficient_data + renormalized total, delete 84.2 mock, mandatory mocked-HTTP tests [IMP-02, IMP-03]
 
 ### Phase 8: Hardening
 **Goal**: All controllers reject malformed input via Zod DTOs; the full crypto stack (keygen, ledger, Shamir, credentials, ZK proofs, impact) is covered by unit tests; an end-to-end integration test passes the complete onboarding flow
@@ -133,5 +136,5 @@ Phases 3+4, 5+6, and 7 can execute in parallel after Phase 2 completes. Phase 8 
 | 4. Shamir Recovery | 0/2 | Not started | - |
 | 5. Verifiable Credentials | 0/2 | Not started | - |
 | 6. zk-SNARK Selective Disclosure | 0/3 | Not started | - |
-| 7. Real Impact Score | 0/TBD | Not started | - |
+| 7. Real Impact Score | 0/3 | Not started | - |
 | 8. Hardening | 0/TBD | Not started | - |
