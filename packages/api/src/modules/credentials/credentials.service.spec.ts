@@ -250,13 +250,19 @@ describe('CredentialsService', () => {
 
       const result = await svc.mint(MINT_DATA);
 
-      // Independently recompute the root from the stored claims
+      // Independently recompute the root from the stored claims.
+      // Must apply the same depth-4 (16-leaf) padding that mint() now uses so
+      // the recomputed root matches the stored root (see CIRCUIT_TREE_SIZE in
+      // credentials.service.ts for the authoritative constant).
       const storedClaims = result.claims as Array<{ name: string; value: string }>;
       expect(storedClaims).toBeInstanceOf(Array);
       expect(storedClaims.length).toBeGreaterThan(0);
 
+      const CIRCUIT_TREE_SIZE = 16; // must match CIRCUIT_DEPTH=4 constant in service
       const leaves = encodeClaimsToLeaves(storedClaims);
-      const { root } = await buildMerkleTree(leaves);
+      const paddedLeaves: bigint[] = [...leaves];
+      while (paddedLeaves.length < CIRCUIT_TREE_SIZE) paddedLeaves.push(0n);
+      const { root } = await buildMerkleTree(paddedLeaves);
 
       expect(result.merkleRoot).toBe(root);
     });

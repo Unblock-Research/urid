@@ -11,6 +11,22 @@ import {
   type Claim,
 } from "../../crypto/claim-encoding";
 
+// ── Circuit depth alignment ────────────────────────────────────────────────────
+//
+// The committed circuit is MerkleInclusionProof(4), so the tree it verifies
+// against is ALWAYS depth-4 (16 leaves).  Both mint() and verifyCredential()
+// must pre-pad their claim leaf array to exactly this size before building the
+// Merkle tree; otherwise prove() — which also pads to CIRCUIT_TREE_SIZE — would
+// compute a different root than the one stored at mint time.
+//
+// See packages/api/circuits/merkle_inclusion.circom for the circuit definition
+// and packages/api/src/modules/zk-proofs/zk-proofs.service.ts for the matching
+// CIRCUIT_DEPTH / TREE_SIZE constants.
+
+const CIRCUIT_DEPTH = 4;
+/** Number of leaves in the depth-4 Poseidon Merkle tree (2^CIRCUIT_DEPTH). */
+const CIRCUIT_TREE_SIZE = Math.pow(2, CIRCUIT_DEPTH); // 16
+
 @Injectable()
 export class CredentialsService {
   private readonly logger = new Logger(CredentialsService.name);
@@ -79,8 +95,15 @@ export class CredentialsService {
     });
 
     // Step 3 — compute Poseidon-Merkle root over the encoded claim leaves
+    // PRE-PAD to CIRCUIT_TREE_SIZE (16) so the tree depth is fixed at
+    // CIRCUIT_DEPTH (4) — exactly matching MerkleInclusionProof(4) in the
+    // committed circuit and the TREE_SIZE constant in ZkProofsService.prove().
+    // Without this, prove() pads to 16 internally and computes a root that
+    // disagrees with the shallower root stored here (depth-mismatch defect).
     const leaves = encodeClaimsToLeaves(claims);
-    const { root: merkleRoot } = await this.crypto.buildMerkleTree(leaves);
+    const paddedLeaves: bigint[] = [...leaves];
+    while (paddedLeaves.length < CIRCUIT_TREE_SIZE) paddedLeaves.push(0n);
+    const { root: merkleRoot } = await this.crypto.buildMerkleTree(paddedLeaves);
 
     // Step 4 — sign rootMessageBytes(root) with the platform issuer key
     const sigBytes = await this.issuerKey.sign(rootMessageBytes(merkleRoot));
@@ -141,9 +164,13 @@ export class CredentialsService {
 
     // Recompute the root from STORED claims (tamper-evidence: T-05-02)
     // Prisma returns Json as `JsonValue`; cast via `unknown` for safety.
+    // Must apply the same CIRCUIT_TREE_SIZE padding as mint() so the
+    // recomputed root matches the stored root for untampered credentials.
     const storedClaims = sbt.claims as unknown as Claim[];
     const leaves = encodeClaimsToLeaves(storedClaims);
-    const { root: recomputedRoot } = await this.crypto.buildMerkleTree(leaves);
+    const paddedLeaves: bigint[] = [...leaves];
+    while (paddedLeaves.length < CIRCUIT_TREE_SIZE) paddedLeaves.push(0n);
+    const { root: recomputedRoot } = await this.crypto.buildMerkleTree(paddedLeaves);
 
     if (recomputedRoot !== sbt.merkleRoot) {
       return { valid: false };
