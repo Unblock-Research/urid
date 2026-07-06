@@ -28,7 +28,12 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
   2. `CryptoService.generateKeypair()` returns a valid Ed25519 keypair; signing a message and verifying against the same keypair succeeds; verifying against a different keypair returns false
   3. `CryptoService.buildMerkleTree(leaves)` constructs a Poseidon-hashed tree; generating an inclusion proof for a known leaf and verifying it against the root passes; a non-member leaf fails verification
   4. `CryptoService.encodeDid(publicKey)` returns a `did:ub:z6Mk…` multibase-encoded string; decoding round-trips back to the original public key bytes
-**Plans**: TBD
+**Plans**: 5 plans
+- [ ] 01-01-PLAN.md — Baseline + additive Prisma migration (crypto fields + LedgerTransaction) [FND-01]
+- [ ] 01-02-PLAN.md — Crypto deps + vitest test tooling (package legitimacy gate) [FND-02, FND-03, FND-04]
+- [ ] 01-03-PLAN.md — Ed25519 keygen/sign/verify + did:ub encode/decode primitives [FND-02, FND-04]
+- [ ] 01-04-PLAN.md — Poseidon/Merkle build + inclusion proof (circom-compatible) [FND-03]
+- [ ] 01-05-PLAN.md — Injectable CryptoService + global CryptoModule assembly [FND-02, FND-03, FND-04]
 
 ### Phase 2: Ledger Abstraction
 **Goal**: All on-chain interactions route through a real `LedgerService` interface backed by a tamper-evident, hash-chained local ledger; the codebase contains no `fetch(localhost:9000)` calls and no swallowed `catch {}` blocks
@@ -112,7 +117,7 @@ Phases 3+4, 5+6, and 7 can execute in parallel after Phase 2 completes. Phase 8 
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Schema + Crypto Foundation | 0/TBD | Not started | - |
+| 1. Schema + Crypto Foundation | 0/5 | Not started | - |
 | 2. Ledger Abstraction | 0/TBD | Not started | - |
 | 3. Real DIDs + Keys | 0/TBD | Not started | - |
 | 4. Shamir Recovery | 0/TBD | Not started | - |
