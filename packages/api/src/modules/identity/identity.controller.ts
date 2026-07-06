@@ -1,6 +1,17 @@
 import { Controller, Get, Post, Put, Param, Body, Query } from "@nestjs/common";
 import { ApiTags } from "@nestjs/swagger";
 import { IdentityService } from "./identity.service";
+import { ZodValidationPipe } from "../../common/zod-validation.pipe";
+import {
+  registerBodySchema,
+  updateBodySchema,
+  setupRecoveryBodySchema,
+  reconstructBodySchema,
+  RegisterBody,
+  UpdateBody,
+  SetupRecoveryBody,
+  ReconstructBody,
+} from "./identity.dto";
 
 @ApiTags("Identity")
 @Controller("identity")
@@ -8,7 +19,9 @@ export class IdentityController {
   constructor(private svc: IdentityService) {}
 
   @Post("register")
-  register(@Body() body: { handle: string; displayName: string }) {
+  register(
+    @Body(new ZodValidationPipe(registerBodySchema)) body: RegisterBody,
+  ) {
     return this.svc.register(body);
   }
 
@@ -28,7 +41,10 @@ export class IdentityController {
   }
 
   @Put("did/:did")
-  update(@Param("did") did: string, @Body() body: any) {
+  update(
+    @Param("did") did: string,
+    @Body(new ZodValidationPipe(updateBodySchema)) body: UpdateBody,
+  ) {
     return this.svc.update(did, body);
   }
 
@@ -45,12 +61,8 @@ export class IdentityController {
   @Post("did/:did/recovery")
   setupRecovery(
     @Param("did") did: string,
-    @Body()
-    body: {
-      guardians: { name: string; kind: string }[];
-      secret?: string;
-      threshold?: number;
-    },
+    @Body(new ZodValidationPipe(setupRecoveryBodySchema))
+    body: SetupRecoveryBody,
   ) {
     return this.svc.setupRecovery(did, body.guardians, body.secret, body.threshold);
   }
@@ -77,13 +89,11 @@ export class IdentityController {
    * they were given at setup.  Returns success + secret when >=T shares
    * are valid; returns failure (no secret bytes) when fewer are valid or
    * a key is wrong/garbled.
-   *
-   * Full Zod DTO validation is deferred to Phase 8.
    */
   @Post("did/:did/recovery/reconstruct")
   reconstruct(
     @Param("did") did: string,
-    @Body() body: { submissions: { shardIndex: number; key: string }[] },
+    @Body(new ZodValidationPipe(reconstructBodySchema)) body: ReconstructBody,
   ) {
     return this.svc.recover(did, body.submissions);
   }
