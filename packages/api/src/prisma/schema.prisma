@@ -20,7 +20,12 @@ model Researcher {
   researchInterests String[]
   careerStage      String   @default("EARLY_CAREER")
   fieldOfStudy     String?
-  
+
+  // Crypto fields (Phase 1)
+  publicKey            String?
+  keyType              String  @default("Ed25519")
+  encryptedPrivateKey  String?
+
   sbts             SoulboundToken[]
   impactScores     ImpactScore[]
   zkProofs         ZkProof[]
@@ -29,7 +34,7 @@ model Researcher {
   walletLinks      WalletLink[]
   recoveryShards   RecoveryShard[]
   auditLogs        AuditLog[]
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -50,7 +55,13 @@ model SoulboundToken {
   revoked        Boolean  @default(false)
   revokedAt      DateTime?
   onChainTxHash  String?
-  
+
+  // Crypto fields (Phase 1)
+  claims          Json?
+  merkleRoot      String?
+  issuerSignature String?
+  issuerPublicKey String?
+
   @@index([researcherId])
 }
 
@@ -78,7 +89,14 @@ model ZkProof {
   status         String   @default("active")
   createdAt      DateTime @default(now())
   expiresAt      DateTime?
-  
+
+  // Crypto fields (Phase 1)
+  proof          Json?
+  publicSignals  Json?
+  circuitId      String?
+  disclosedClaims Json?
+  verified       Boolean  @default(false)
+
   @@index([researcherId, status])
 }
 
@@ -131,7 +149,12 @@ model RecoveryShard {
   guardianKind String
   status       String   @default("pending")
   sentAt       DateTime?
-  
+
+  // Crypto fields (Phase 1)
+  encryptedShard String?
+  shardIndex     Int?
+  threshold      Int?
+
   @@index([researcherId])
 }
 
@@ -143,6 +166,19 @@ model AuditLog {
   appName      String?
   claims       String?
   timestamp    DateTime @default(now())
-  
+
   @@index([researcherId])
+}
+
+// Phase 1: Ledger foundation for Phase 2 hash-chain
+model LedgerTransaction {
+  id        String   @id @default(uuid())
+  index     Int
+  type      String
+  payload   Json
+  txHash    String   @unique
+  prevHash  String
+  createdAt DateTime @default(now())
+
+  @@index([index])
 }
