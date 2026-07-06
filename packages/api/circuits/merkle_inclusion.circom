@@ -78,13 +78,28 @@ template MerkleInclusionProof(depth) {
     currentHash[depth] === root;
 
     // -- Step 4: Optional predicate -- leafValue >= threshold -------------
-    // IMPORTANT: GreaterEqThan(64) requires leafValue < 2^64.
-    // For sha256-encoded claims (leafValue up to ~2^254), always set
-    // threshold=0 and predicateEnabled=0.  The predicate is meaningful
-    // only when the claim was encoded as a small integer (< 2^64).
+    //
+    // GreaterEqThan(64) internally calls Num2Bits(65), which requires BOTH
+    // inputs to be < 2^64.  SHA-256-encoded leaf values (up to ~2^254) would
+    // cause Num2Bits(65) to fail even when predicateEnabled=0, because circom
+    // evaluates ALL constraints unconditionally.
+    //
+    // Fix: clamp both comparator inputs to 0 when predicateEnabled=0 by
+    // multiplying by predicateEnabled.  predicateEnabled is binary (enforced
+    // above), so this product is a valid quadratic constraint.
+    //   predicateEnabled=0 -> geq inputs are (0, 0) -> geq.out=1 (0>=0) -> result=1
+    //   predicateEnabled=1 -> geq inputs are (leafValue, threshold)
+    //     leafValue < 2^64:  works correctly as a numeric predicate
+    //     leafValue >= 2^64: Num2Bits rejects (soundness -- large SHA-256
+    //       claims must not enable the numeric predicate)
+    signal clampedLeaf;
+    signal clampedThreshold;
+    clampedLeaf      <== predicateEnabled * leafValue;
+    clampedThreshold <== predicateEnabled * threshold;
+
     component geq = GreaterEqThan(64);
-    geq.in[0] <== leafValue;
-    geq.in[1] <== threshold;
+    geq.in[0] <== clampedLeaf;
+    geq.in[1] <== clampedThreshold;
 
     // predicateResult = predicateEnabled * geq.out + (1 - predicateEnabled)
     // predicateEnabled=0 -> predicateResult = 1 (always pass)
