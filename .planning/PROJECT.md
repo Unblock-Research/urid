@@ -22,17 +22,21 @@ A researcher can hold verifiable credentials on a cryptographic identity they co
 - ✓ Social-recovery guardian setup — existing (`identity.setupRecovery`)
 - ✓ NestJS + Prisma + PostgreSQL persistence, Swagger docs, web + mobile clients — existing
 
+### Validated
+
+<!-- v1.0 "Make It Real" milestone — shipped and verified 2026-07-07 (246 tests, real-crypto E2E flow). -->
+
+- ✓ Real cryptographic DIDs — Ed25519 keypairs; DID derived from the public key — Phase 3
+- ✓ Real on-chain anchoring — abstract `LedgerService` + tamper-evident hash-chained local ledger; `fetch(localhost:9000)`/`catch {}` removed — Phase 2
+- ✓ Real social recovery — Shamir T-of-N secret sharing, AES-256-GCM per-guardian shares, sub-threshold no-leak — Phase 4
+- ✓ Real verifiable credentials — issuer-signed SBTs over a Poseidon-Merkle claim commitment; recompute-based tamper detection — Phase 5
+- ✓ Real zero-knowledge selective disclosure — Groth16 circom circuit (Merkle membership + predicate); `sha256(JSON)` removed — Phase 6
+- ✓ Real impact score — computed from live ORCID + Crossref data; hardcoded 84.2 removed; honest `insufficient_data` — Phase 7
+- ✓ Hardening — Zod validation on all 6 controllers; unit + real-crypto E2E integration tests — Phase 8
+
 ### Active
 
-<!-- This milestone: replace the four mocked subsystems (+ recovery) with genuinely functional implementations. No behavior-faking left behind. -->
-
-- [ ] Real cryptographic DIDs — Ed25519 keypairs; DID derived from the public key (replaces character-code-sum DID)
-- [ ] Real social recovery — Shamir secret sharing of the recovery secret, T-of-N, encrypted per guardian (replaces label-only shards)
-- [ ] Real verifiable credentials — issuer-signed SBTs over a Poseidon-Merkle claim commitment (replaces plain DB rows)
-- [ ] Real zero-knowledge selective disclosure — Groth16 circom circuit proving Merkle membership + predicates (replaces `sha256(JSON)`)
-- [ ] Real on-chain anchoring — abstract `LedgerService` backed by a tamper-evident hash-chained local ledger (replaces fire-and-forget `fetch` + swallowed errors)
-- [ ] Real impact score — computed from live ORCID + Crossref data (replaces hardcoded constants)
-- [ ] Hardening — Zod DTO validation on all controllers, unit + integration tests for the above
+(None — v1.0 milestone complete. Next milestone candidates in Out of Scope / v2 requirements.)
 
 ### Out of Scope
 

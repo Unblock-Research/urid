@@ -103,9 +103,9 @@ Deferred to future milestones. Tracked, not in this roadmap.
 | IMP-01 | Phase 7 | Complete |
 | IMP-02 | Phase 7 | Complete |
 | IMP-03 | Phase 7 | Complete |
-| HRD-01 | Phase 8 | Pending |
-| HRD-02 | Phase 8 | Pending |
-| HRD-03 | Phase 8 | Pending |
+| HRD-01 | Phase 8 | Complete |
+| HRD-02 | Phase 8 | Complete |
+| HRD-03 | Phase 8 | Complete |
 
 **Coverage:**
 - v1 requirements: 24 total
