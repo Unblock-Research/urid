@@ -1,1 +1,12 @@
-{ "expo": { "name": "URID", "slug": "urid", "scheme": "urid", "version": "1.0.0", "platforms": ["ios", "android"] } }
+{
+  "expo": {
+    "name": "URID",
+    "slug": "urid",
+    "scheme": "urid",
+    "version": "1.0.0",
+    "platforms": ["ios", "android"],
+    "ios": { "bundleIdentifier": "com.unblockresearch.urid" },
+    "android": { "package": "com.unblockresearch.urid" },
+    "plugins": ["expo-router"]
+  }
+}

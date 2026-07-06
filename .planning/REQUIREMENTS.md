@@ -82,10 +82,10 @@ Deferred to future milestones. Tracked, not in this roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FND-01 | Phase 1 | Pending |
-| FND-02 | Phase 1 | Pending |
-| FND-03 | Phase 1 | Pending |
-| FND-04 | Phase 1 | Pending |
+| FND-01 | Phase 1 | Complete |
+| FND-02 | Phase 1 | Complete |
+| FND-03 | Phase 1 | Complete |
+| FND-04 | Phase 1 | Complete |
 | LDG-01 | Phase 2 | Pending |
 | LDG-02 | Phase 2 | Pending |
 | LDG-03 | Phase 2 | Pending |

@@ -8,7 +8,7 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
 
 ## Phases
 
-- [ ] **Phase 1: Schema + Crypto Foundation** - Migrate schema to store all real-crypto fields; build Ed25519, Poseidon/Merkle, and DID encode/decode primitives
+- [x] **Phase 1: Schema + Crypto Foundation** - Migrate schema to store all real-crypto fields; build Ed25519, Poseidon/Merkle, and DID encode/decode primitives ✓ verified 2026-07-07 (20/20 tests)
 - [ ] **Phase 2: Ledger Abstraction** - Implement `LedgerService` interface + tamper-evident hash-chained local ledger; eliminate all fire-and-forget `fetch` calls
 - [ ] **Phase 3: Real DIDs + Keys** - Registration generates real Ed25519 keypairs, derives DID from public key, anchors via ledger
 - [ ] **Phase 4: Shamir Recovery** - Social recovery backed by real Shamir secret sharing with T-of-N encrypted per-guardian shares
