@@ -80,40 +80,38 @@ Deferred to future milestones. Tracked, not in this roadmap.
 
 ## Traceability
 
-Populated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FND-01 | — | Pending |
-| FND-02 | — | Pending |
-| FND-03 | — | Pending |
-| FND-04 | — | Pending |
-| LDG-01 | — | Pending |
-| LDG-02 | — | Pending |
-| LDG-03 | — | Pending |
-| IDN-01 | — | Pending |
-| IDN-02 | — | Pending |
-| IDN-03 | — | Pending |
-| REC-01 | — | Pending |
-| REC-02 | — | Pending |
-| CRD-01 | — | Pending |
-| CRD-02 | — | Pending |
-| CRD-03 | — | Pending |
-| ZKP-01 | — | Pending |
-| ZKP-02 | — | Pending |
-| ZKP-03 | — | Pending |
-| IMP-01 | — | Pending |
-| IMP-02 | — | Pending |
-| IMP-03 | — | Pending |
-| HRD-01 | — | Pending |
-| HRD-02 | — | Pending |
-| HRD-03 | — | Pending |
+| FND-01 | Phase 1 | Pending |
+| FND-02 | Phase 1 | Pending |
+| FND-03 | Phase 1 | Pending |
+| FND-04 | Phase 1 | Pending |
+| LDG-01 | Phase 2 | Pending |
+| LDG-02 | Phase 2 | Pending |
+| LDG-03 | Phase 2 | Pending |
+| IDN-01 | Phase 3 | Pending |
+| IDN-02 | Phase 3 | Pending |
+| IDN-03 | Phase 3 | Pending |
+| REC-01 | Phase 4 | Pending |
+| REC-02 | Phase 4 | Pending |
+| CRD-01 | Phase 5 | Pending |
+| CRD-02 | Phase 5 | Pending |
+| CRD-03 | Phase 5 | Pending |
+| ZKP-01 | Phase 6 | Pending |
+| ZKP-02 | Phase 6 | Pending |
+| ZKP-03 | Phase 6 | Pending |
+| IMP-01 | Phase 7 | Pending |
+| IMP-02 | Phase 7 | Pending |
+| IMP-03 | Phase 7 | Pending |
+| HRD-01 | Phase 8 | Pending |
+| HRD-02 | Phase 8 | Pending |
+| HRD-03 | Phase 8 | Pending |
 
 **Coverage:**
 - v1 requirements: 24 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 24 ⚠️
+- Mapped to phases: 24 (100%)
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-07-07*
-*Last updated: 2026-07-07 after initial definition*
+*Last updated: 2026-07-07 — traceability filled after roadmap creation*
