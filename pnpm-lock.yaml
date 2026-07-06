@@ -52,6 +52,9 @@ importers:
       rxjs:
         specifier: ^7.8.0
         version: 7.8.2
+      shamir-secret-sharing:
+        specifier: ^0.0.4
+        version: 0.0.4
       zod:
         specifier: ^3.25.0
         version: 3.25.76
@@ -5007,6 +5010,9 @@ packages:
 
   shallowequal@1.1.0:
     resolution: {integrity: sha512-y0m1JoUZSlPAjXVtPPW70aZWfIL/dSP7AFkRnniLCrK/8MDKog3TySTBmckD+RObVxH0v4Tox67+F14PdED2oQ==}
+
+  shamir-secret-sharing@0.0.4:
+    resolution: {integrity: sha512-ui8u/cIg2j16b9on/LH3V/glL6wHdwiTo/Iajzqx0STniBvuOzl6VYUxhrow3waF0dggovJfYiBZSWfTAN4XLQ==}
 
   sharp@0.34.5:
     resolution: {integrity: sha512-Ou9I5Ft9WNcCbXrU9cMgPBcCK8LiwLqcbywW3t4oDV37n1pzpuNLsYiAV8eODnjbtQlSDwZ2cUEeQz4E54Hltg==}
@@ -11668,6 +11674,8 @@ snapshots:
       kind-of: 6.0.3
 
   shallowequal@1.1.0: {}
+
+  shamir-secret-sharing@0.0.4: {}
 
   sharp@0.34.5:
     dependencies:
