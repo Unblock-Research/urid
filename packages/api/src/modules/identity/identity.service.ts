@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { LedgerService } from "../../ledger/ledger.service";
+import { CryptoService } from "../../crypto/crypto.service";
 
 @Injectable()
 export class IdentityService {
@@ -9,23 +10,47 @@ export class IdentityService {
   constructor(
     private prisma: PrismaService,
     private ledger: LedgerService,
+    private crypto: CryptoService,
   ) {}
 
-  async register(data: { handle: string; displayName: string; did?: string }) {
-    const hash = Array.from(data.handle).reduce((a, c) => a + c.charCodeAt(0), 0);
-    const did = data.did || "did:ub:0x" + Math.abs(hash).toString(16).padStart(8, "0").toUpperCase();
-
+  async register(data: { handle: string; displayName: string }) {
+    // Guard: check handle uniqueness BEFORE generating any key material
     const existing = await this.prisma.researcher.findUnique({ where: { handle: data.handle } });
     if (existing) throw new Error("Handle already taken");
 
+    // Generate a real Ed25519 keypair and derive the self-certifying DID
+    const { publicKey, privateKey } = await this.crypto.generateKeypair();
+    const did = await this.crypto.encodeDid(publicKey);
+
+    // Encode keys as hex for storage and transport consistency
+    const publicKeyHex = Buffer.from(publicKey).toString("hex");
+    const privateKeyHex = Buffer.from(privateKey).toString("hex");
+
+    // Persist only the public key — private key is NEVER stored
     const researcher = await this.prisma.researcher.create({
-      data: { handle: data.handle, did, displayName: data.displayName },
+      data: {
+        handle: data.handle,
+        displayName: data.displayName,
+        did,
+        publicKey: publicKeyHex,
+        keyType: "Ed25519",
+        // encryptedPrivateKey intentionally omitted (stays null) — client custody
+      },
     });
+
     this.logger.log(`Registered: @${data.handle} → ${did}`);
 
-    await this.ledger.registerDid({ handle: data.handle, did });
+    // Anchor the real identity on the ledger
+    await this.ledger.registerDid({ handle: data.handle, did, publicKey: publicKeyHex });
 
-    return researcher;
+    // Return the private key exactly once, flagged as non-recoverable
+    return {
+      researcher,
+      did,
+      publicKey: publicKeyHex,
+      privateKey: privateKeyHex,
+      keyCustody: "Store this private key now — it is shown once and never recoverable if lost.",
+    };
   }
 
   async getByDid(did: string) {

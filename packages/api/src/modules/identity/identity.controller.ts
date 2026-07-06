@@ -8,7 +8,7 @@ export class IdentityController {
   constructor(private svc: IdentityService) {}
 
   @Post("register")
-  register(@Body() body: { handle: string; displayName: string; did?: string }) {
+  register(@Body() body: { handle: string; displayName: string }) {
     return this.svc.register(body);
   }
 
