@@ -79,7 +79,9 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
   1. `POST /api/credentials/mint` returns a credential where `merkleRoot`, `issuerSignature`, and `issuerPublicKey` are all non-null strings
   2. For a stored credential, `Ed25519.verify(issuerSignature, merkleRoot, issuerPublicKey)` returns true; mutating any stored claim field causes the same verification to return false
   3. A `LedgerTransaction` of type `mintSbt` exists for the credential immediately after a successful mint call
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 05-01-PLAN.md — Shared claim→field-element encoder (crypto/claim-encoding.ts) + env-backed injectable Ed25519 issuer key provider [CRD-01]
+- [ ] 05-02-PLAN.md — Extend mint() (claim set → Poseidon-Merkle root → issuer signature, keep ledger anchor) + verifyCredential + verify route + mandatory tests [CRD-01, CRD-02, CRD-03]
 
 ### Phase 6: zk-SNARK Selective Disclosure
 **Goal**: Selective-disclosure proofs use a real compiled circom Groth16 circuit that proves Poseidon-Merkle membership and optional numeric predicates; the sha256(JSON) stand-in is eliminated; Ed25519 signature verification remains outside the circuit
@@ -126,7 +128,7 @@ Phases 3+4, 5+6, and 7 can execute in parallel after Phase 2 completes. Phase 8 
 | 2. Ledger Abstraction | 0/TBD | Not started | - |
 | 3. Real DIDs + Keys | 0/1 | Not started | - |
 | 4. Shamir Recovery | 0/2 | Not started | - |
-| 5. Verifiable Credentials | 0/TBD | Not started | - |
+| 5. Verifiable Credentials | 0/2 | Not started | - |
 | 6. zk-SNARK Selective Disclosure | 0/TBD | Not started | - |
 | 7. Real Impact Score | 0/TBD | Not started | - |
 | 8. Hardening | 0/TBD | Not started | - |
