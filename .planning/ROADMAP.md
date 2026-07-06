@@ -14,7 +14,7 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
 - [x] **Phase 4: Shamir Recovery** - Social recovery backed by real Shamir secret sharing with T-of-N encrypted per-guardian shares ✓ verified 2026-07-07 (no-leak confirmed)
 - [x] **Phase 5: Verifiable Credentials** - SBTs become signed VCs with Poseidon-Merkle claim commitment and issuer Ed25519 signature over the root ✓ verified 2026-07-07 (recompute-based tamper detection)
 - [x] **Phase 6: zk-SNARK Selective Disclosure** - Real Groth16 circom circuit proves Merkle membership + predicates; replaces sha256(JSON) proofs ✓ verified 2026-07-07 (real Groth16, sha256 mock removed)
-- [ ] **Phase 7: Real Impact Score** - 7-pillar score computed from live ORCID + Crossref data; hardcoded constants removed
+- [x] **Phase 7: Real Impact Score** - 7-pillar score computed from live ORCID + Crossref data; hardcoded constants removed ✓ verified 2026-07-07 (84.2 constant removed, data-driven)
 - [ ] **Phase 8: Hardening** - Zod DTO validation on all controllers; unit + integration tests across the full crypto stack
 
 ## Phase Details
