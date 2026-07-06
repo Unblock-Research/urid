@@ -93,7 +93,10 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
   2. `GET /api/zk-proofs/verify` on a valid proof returns verified: the Groth16 verifier passes against the verification key AND the issuer's Ed25519 signature on the Merkle root is confirmed
   3. A proof generated from a claim not present in the original Merkle tree fails verification
   4. A proof with a numeric predicate (e.g. `hIndex >= threshold`) correctly passes when the predicate holds and fails when the predicate does not hold
-**Plans**: TBD
+**Plans**: 3 plans
+- [ ] 06-01-PLAN.md — Package-legitimacy checkpoint + install snarkjs + circomlib [ZKP-01]
+- [ ] 06-02-PLAN.md — circom disclosure circuit + build script + Groth16 trusted setup → committed wasm/zkey/vkey + artifact smoke test [ZKP-01]
+- [ ] 06-03-PLAN.md — Rewrite prove() (real fullProve, delete sha256 stub) + verify() (groth16.verify AND Ed25519 root binding) + mandatory tests [ZKP-01, ZKP-02, ZKP-03]
 
 ### Phase 7: Real Impact Score
 **Goal**: The 7-pillar impact score is computed from live ORCID and Crossref API data; hardcoded constants are removed; pillars with insufficient data report `insufficient_data` instead of fabricated numbers
@@ -129,6 +132,6 @@ Phases 3+4, 5+6, and 7 can execute in parallel after Phase 2 completes. Phase 8 
 | 3. Real DIDs + Keys | 0/1 | Not started | - |
 | 4. Shamir Recovery | 0/2 | Not started | - |
 | 5. Verifiable Credentials | 0/2 | Not started | - |
-| 6. zk-SNARK Selective Disclosure | 0/TBD | Not started | - |
+| 6. zk-SNARK Selective Disclosure | 0/3 | Not started | - |
 | 7. Real Impact Score | 0/TBD | Not started | - |
 | 8. Hardening | 0/TBD | Not started | - |
