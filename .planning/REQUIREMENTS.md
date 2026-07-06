@@ -97,9 +97,9 @@ Deferred to future milestones. Tracked, not in this roadmap.
 | CRD-01 | Phase 5 | Complete |
 | CRD-02 | Phase 5 | Complete |
 | CRD-03 | Phase 5 | Complete |
-| ZKP-01 | Phase 6 | Pending |
-| ZKP-02 | Phase 6 | Pending |
-| ZKP-03 | Phase 6 | Pending |
+| ZKP-01 | Phase 6 | Complete |
+| ZKP-02 | Phase 6 | Complete |
+| ZKP-03 | Phase 6 | Complete |
 | IMP-01 | Phase 7 | Pending |
 | IMP-02 | Phase 7 | Pending |
 | IMP-03 | Phase 7 | Pending |
