@@ -67,7 +67,9 @@ This milestone replaces the four mocked subsystems (ZK proofs, DIDs/keys, on-cha
   1. `POST /api/identity/setup-recovery` with N guardians and threshold T creates exactly N `RecoveryShard` records, each with non-null `encryptedShard`, `shardIndex`, and `threshold` fields
   2. Submitting ≥T valid, correctly-keyed guardian shares to the recovery endpoint reconstructs the recovery secret and returns a success response
   3. Submitting fewer than T shares to the recovery endpoint returns a failure response without disclosing any partial secret material
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 04-01-PLAN.md — Package-legitimacy checkpoint + install shamir-secret-sharing [REC-01, REC-02]
+- [ ] 04-02-PLAN.md — Rewrite setupRecovery (Shamir split + per-guardian AES-256-GCM) + add recover + reconstruct route + tests [REC-01, REC-02]
 
 ### Phase 5: Verifiable Credentials
 **Goal**: Minted SBTs become real verifiable credentials — the issuer builds a canonical claim set, commits it to a Poseidon-Merkle root, signs the root with Ed25519, and the signature can be independently verified
@@ -123,7 +125,7 @@ Phases 3+4, 5+6, and 7 can execute in parallel after Phase 2 completes. Phase 8 
 | 1. Schema + Crypto Foundation | 0/5 | Not started | - |
 | 2. Ledger Abstraction | 0/TBD | Not started | - |
 | 3. Real DIDs + Keys | 0/1 | Not started | - |
-| 4. Shamir Recovery | 0/TBD | Not started | - |
+| 4. Shamir Recovery | 0/2 | Not started | - |
 | 5. Verifiable Credentials | 0/TBD | Not started | - |
 | 6. zk-SNARK Selective Disclosure | 0/TBD | Not started | - |
 | 7. Real Impact Score | 0/TBD | Not started | - |
