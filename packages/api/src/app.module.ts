@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { AuthModule } from "./auth/auth.module";
 import { CryptoModule } from "./crypto/crypto.module";
 import { IdentityModule } from "./modules/identity/identity.module";
 import { CredentialsModule } from "./modules/credentials/credentials.module";
@@ -10,6 +11,7 @@ import { ImpactModule } from "./modules/impact/impact.module";
 @Module({
   imports: [
     CryptoModule,
+    AuthModule,
     IdentityModule,
     CredentialsModule,
     ZkProofsModule,

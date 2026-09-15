@@ -84,8 +84,17 @@ export class IdentityService {
     };
   }
 
+  /**
+   * Public DID resolution.
+   *
+   * recoveryShards is deliberately NOT included: guardian names are personal data
+   * about third parties, and this route is unauthenticated so anyone could
+   * enumerate a researcher's social graph from it. The authenticated
+   * `GET identity/did/:did/recovery` serves that information to the holder, already
+   * projected to safe fields.
+   */
   async getByDid(did: string) {
-    return this.prisma.researcher.findUnique({ where: { did }, include: { sbts: true, affilRecords: true, walletLinks: true, recoveryShards: true } });
+    return this.prisma.researcher.findUnique({ where: { did }, include: { sbts: true, affilRecords: true, walletLinks: true } });
   }
 
   async getByHandle(handle: string) {

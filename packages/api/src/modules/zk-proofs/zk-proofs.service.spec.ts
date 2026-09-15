@@ -155,7 +155,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
         appName: 'test-app-zkp',
         consentWindow: 'forever',
         predicateEnabled: false,
-      }) as Record<string, unknown>;
+      }, RESEARCHER_ID) as Record<string, unknown>;
     },
     60_000, // 60 s — Groth16 fullProve can take up to 5 s
   );
@@ -236,7 +236,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
         disclosedClaimName: 'nonExistentClaimXYZ123',
         appName: 'test-app-zkp',
         consentWindow: 'forever',
-      }),
+      }, RESEARCHER_ID),
     ).rejects.toThrow();
   });
 
@@ -318,7 +318,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
       appName: 'test-app-zkp',
       consentWindow: 'forever',
       predicateEnabled: false,
-    })) as Record<string, unknown>;
+    }, RESEARCHER_ID)) as Record<string, unknown>;
 
     const otherSignals = other.publicSignals as string[];
     const originalSignals = proveResult.publicSignals as string[];
@@ -354,7 +354,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
       appName: 'test-app-zkp',
       consentWindow: 'forever',
       predicateEnabled: false,
-    })) as Record<string, unknown>;
+    }, RESEARCHER_ID)) as Record<string, unknown>;
 
     // Same credential, same claim, same options — identical public signals...
     expect((second.publicSignals as string[]).join('|')).toBe(
@@ -428,7 +428,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
           appName: 'test-app-zkp',
           consentWindow: 'forever',
           predicateEnabled: false,
-        }),
+        }, RESEARCHER_ID),
       ).rejects.toThrow(/revoked/i);
     } finally {
       mockSbt.revoked = wasRevoked;

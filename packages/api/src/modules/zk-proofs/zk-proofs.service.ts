@@ -19,7 +19,7 @@
  *   - the bound credential not to be revoked
  */
 
-import { Injectable, Logger } from "@nestjs/common";
+import { ForbiddenException, Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { CryptoService } from "../../crypto/crypto.service";
 import { sha256 } from "@noble/hashes/sha256";
@@ -91,14 +91,17 @@ export class ZkProofsService {
    *
    * Replaces the legacy request-payload digest with a real Groth16 proof.
    */
-  async prove(data: {
-    credentialId: string;
-    disclosedClaimName: string;
-    appName: string;
-    consentWindow: string;
-    threshold?: string;
-    predicateEnabled?: boolean;
-  }) {
+  async prove(
+    data: {
+      credentialId: string;
+      disclosedClaimName: string;
+      appName: string;
+      consentWindow: string;
+      threshold?: string;
+      predicateEnabled?: boolean;
+    },
+    actorResearcherId: string,
+  ) {
     // 1. Load the SoulboundToken by credentialId
     const sbt = await this.prisma.soulboundToken.findUnique({
       where: { id: data.credentialId },
@@ -107,6 +110,14 @@ export class ZkProofsService {
       throw new Error(
         "Credential not found or missing crypto fields (claims/merkleRoot)",
       );
+    }
+
+    // Ownership (critical finding #1). The credential is addressed by id, so the
+    // guard could not check this from the route — only the holder of a credential
+    // may disclose it. Reported as not-found rather than forbidden so the endpoint
+    // does not confirm which credential ids exist.
+    if (sbt.researcherId !== actorResearcherId) {
+      throw new ForbiddenException("Credential not found for this researcher");
     }
 
     // Refuse to mint new proofs over a revoked credential (critical finding #4).
@@ -411,7 +422,18 @@ export class ZkProofsService {
     });
   }
 
-  async revoke(id: string) {
+  /**
+   * Revoke a proof the caller owns.
+   *
+   * Ownership is checked here rather than in the guard because the route keys off
+   * a proof id (critical finding #1) — otherwise any authenticated researcher
+   * could revoke anyone's proofs.
+   */
+  async revoke(id: string, actorResearcherId: string) {
+    const existing = await this.prisma.zkProof.findUnique({ where: { id } });
+    if (!existing || existing.researcherId !== actorResearcherId) {
+      throw new ForbiddenException("Proof not found for this researcher");
+    }
     return this.prisma.zkProof.update({
       where: { id },
       data: { status: "revoked" },
