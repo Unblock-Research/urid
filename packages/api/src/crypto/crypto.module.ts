@@ -9,15 +9,17 @@
  * Providers registered here:
  *   - CryptoService        — Ed25519 keygen/sign/verify, Poseidon Merkle, did:ub
  *   - IssuerKeyService     — env-backed Ed25519 issuer key provider (Phase 5+)
+ *   - IssuerRegistryService — the set of issuer keys this deployment trusts
  */
 
 import { Global, Module } from '@nestjs/common';
 import { CryptoService } from './crypto.service';
 import { IssuerKeyService } from './issuer-key.service';
+import { IssuerRegistryService } from './issuer-registry.service';
 
 @Global()
 @Module({
-  providers: [CryptoService, IssuerKeyService],
-  exports: [CryptoService, IssuerKeyService],
+  providers: [CryptoService, IssuerKeyService, IssuerRegistryService],
+  exports: [CryptoService, IssuerKeyService, IssuerRegistryService],
 })
 export class CryptoModule {}

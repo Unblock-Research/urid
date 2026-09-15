@@ -3,26 +3,52 @@
  *
  * Verifies the canonical claim-set builder and BN254 field-element leaf encoder
  * per CRYPTO-NOTES.md section 3.  All leaf-encoding behaviour must match the
- * Phase 6 witness generator exactly.
+ * circom witness generator exactly.
+ *
+ * v2 (critical finding #3): a claim is encoded as two halves —
+ *   leafValue = poseidon([claimNameHash(name), claimValueHash(value)])
+ * so the circuit can publish the name half while keeping the value half private.
  *
  * Threat register coverage:
- *   - T-05-05: leaf value is sha256(canonicalJSON) mod BN254 p; reproducibility
- *              asserted via two independent Merkle-root runs.
+ *   - T-05-05: both halves are sha256(domain-tagged input) mod BN254 p;
+ *              reproducibility asserted via two independent Merkle-root runs.
  */
 
 import { describe, it, expect } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+
 import {
   BN254_FIELD_PRIME,
+  MAX_NUMERIC_CLAIM_VALUE,
+  NUMERIC_VALUE_TAG,
   buildClaimSet,
-  claimToFieldElement,
+  claimNameHash,
+  claimToLeafValue,
+  claimValueCommitment,
+  claimValueHash,
   encodeClaimsToLeaves,
+  isNumericClaim,
+  numericValueHash,
   rootMessageBytes,
   type Claim,
   type ClaimSetInput,
 } from './claim-encoding';
+import { poseidonHash } from './merkle';
 import { buildMerkleTree } from './merkle';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
+
+/**
+ * Merkle root of FULL_INPUT under the string-only encoding, captured by running
+ * the encoder from the commit BEFORE numeric claims existed (1777cd9).
+ *
+ * This is the regression guard for "existing credentials need no re-mint": if
+ * adding numeric-claim support perturbs the string path at all, this value moves
+ * and every already-minted credential stops verifying.
+ */
+const PINNED_STRING_ONLY_ROOT =
+  '278597314367360c9888a76836b90aa1898fd37ede57db583bd99f145f38d08e';
 
 const FULL_INPUT: ClaimSetInput = {
   holderDid: 'did:ub:z6Mkabcdef',
@@ -105,70 +131,104 @@ describe('buildClaimSet', () => {
   });
 });
 
-// ── claimToFieldElement ──────────────────────────────────────────────────────
+// ── claimNameHash / claimValueHash ───────────────────────────────────────────
 
-describe('claimToFieldElement', () => {
-  it('returns a bigint', () => {
-    const claim: Claim = { name: 'title', value: 'BSc Computer Science' };
-    const fe = claimToFieldElement(claim);
-    expect(typeof fe).toBe('bigint');
-  });
-
-  it('returns a value strictly less than BN254_FIELD_PRIME (mod p reduction)', () => {
-    const claims = buildClaimSet(FULL_INPUT);
-    for (const c of claims) {
-      const fe = claimToFieldElement(c);
-      expect(fe).toBeGreaterThanOrEqual(BigInt(0));
-      expect(fe).toBeLessThan(BN254_FIELD_PRIME);
+describe('claimNameHash / claimValueHash', () => {
+  it('both return bigints in [0, BN254_FIELD_PRIME)', () => {
+    for (const c of buildClaimSet(FULL_INPUT)) {
+      const n = claimNameHash(c.name);
+      const v = claimValueHash(c.value);
+      expect(typeof n).toBe('bigint');
+      expect(typeof v).toBe('bigint');
+      expect(n).toBeGreaterThanOrEqual(BigInt(0));
+      expect(n).toBeLessThan(BN254_FIELD_PRIME);
+      expect(v).toBeGreaterThanOrEqual(BigInt(0));
+      expect(v).toBeLessThan(BN254_FIELD_PRIME);
     }
   });
 
-  it('is deterministic: same claim always produces the same field element', () => {
-    const claim: Claim = { name: 'issuer', value: 'University of Test' };
-    const fe1 = claimToFieldElement(claim);
-    const fe2 = claimToFieldElement(claim);
-    expect(fe1).toBe(fe2);
+  it('are deterministic', () => {
+    expect(claimNameHash('title')).toBe(claimNameHash('title'));
+    expect(claimValueHash('BSc')).toBe(claimValueHash('BSc'));
   });
 
-  it('is collision-distinct: two different claims produce different field elements', () => {
+  it('are collision-distinct across different inputs', () => {
+    expect(claimNameHash('title')).not.toBe(claimNameHash('fieldOfStudy'));
+    expect(claimValueHash('Bachelor of Science')).not.toBe(
+      claimValueHash('Master of Science'),
+    );
+  });
+
+  it('are domain-separated: the same string hashes differently as a name vs a value', () => {
+    // Without domain separation a claim whose VALUE equals another claim's NAME
+    // would produce the same digest in both roles.
+    expect(claimNameHash('title')).not.toBe(claimValueHash('title'));
+  });
+});
+
+// ── claimToLeafValue ─────────────────────────────────────────────────────────
+
+describe('claimToLeafValue', () => {
+  it('returns a bigint in [0, BN254_FIELD_PRIME)', async () => {
+    const claim: Claim = { name: 'title', value: 'BSc Computer Science' };
+    const fe = await claimToLeafValue(claim);
+    expect(typeof fe).toBe('bigint');
+    expect(fe).toBeGreaterThanOrEqual(BigInt(0));
+    expect(fe).toBeLessThan(BN254_FIELD_PRIME);
+  });
+
+  it('is deterministic: same claim always produces the same leaf value', async () => {
+    const claim: Claim = { name: 'issuer', value: 'University of Test' };
+    expect(await claimToLeafValue(claim)).toBe(await claimToLeafValue(claim));
+  });
+
+  it('is collision-distinct: two different values produce different leaf values', async () => {
     const c1: Claim = { name: 'title', value: 'Bachelor of Science' };
     const c2: Claim = { name: 'title', value: 'Master of Science' };
-    const fe1 = claimToFieldElement(c1);
-    const fe2 = claimToFieldElement(c2);
-    expect(fe1).not.toBe(fe2);
+    expect(await claimToLeafValue(c1)).not.toBe(await claimToLeafValue(c2));
   });
 
-  it('is sensitive to name: same value but different name yields different field element', () => {
+  it('is sensitive to name: same value but different name yields a different leaf value', async () => {
     const c1: Claim = { name: 'title', value: 'Computer Science' };
     const c2: Claim = { name: 'fieldOfStudy', value: 'Computer Science' };
-    expect(claimToFieldElement(c1)).not.toBe(claimToFieldElement(c2));
+    expect(await claimToLeafValue(c1)).not.toBe(await claimToLeafValue(c2));
+  });
+
+  it('equals poseidon over the two halves — the rule the circuit reimplements', async () => {
+    const { poseidonHash } = await import('./merkle');
+    const claim: Claim = { name: 'fieldOfStudy', value: 'Computer Science' };
+    const expected = await poseidonHash([
+      claimNameHash(claim.name),
+      claimValueHash(claim.value),
+    ]);
+    expect(await claimToLeafValue(claim)).toBe(expected);
   });
 });
 
 // ── encodeClaimsToLeaves ─────────────────────────────────────────────────────
 
 describe('encodeClaimsToLeaves', () => {
-  it('returns an array of bigints with the same length as the input claims', () => {
+  it('returns an array of bigints with the same length as the input claims', async () => {
     const claims = buildClaimSet(FULL_INPUT);
-    const leaves = encodeClaimsToLeaves(claims);
+    const leaves = await encodeClaimsToLeaves(claims);
     expect(leaves).toHaveLength(claims.length);
     for (const v of leaves) {
       expect(typeof v).toBe('bigint');
     }
   });
 
-  it('each leaf value is < BN254_FIELD_PRIME', () => {
-    const leaves = encodeClaimsToLeaves(buildClaimSet(FULL_INPUT));
+  it('each leaf value is < BN254_FIELD_PRIME', async () => {
+    const leaves = await encodeClaimsToLeaves(buildClaimSet(FULL_INPUT));
     for (const v of leaves) {
       expect(v).toBeLessThan(BN254_FIELD_PRIME);
     }
   });
 
-  it('preserves the ordering of the input claims array', () => {
+  it('preserves the ordering of the input claims array', async () => {
     const claims = buildClaimSet(FULL_INPUT);
-    const leaves = encodeClaimsToLeaves(claims);
+    const leaves = await encodeClaimsToLeaves(claims);
     for (let i = 0; i < claims.length; i++) {
-      expect(leaves[i]).toBe(claimToFieldElement(claims[i]));
+      expect(leaves[i]).toBe(await claimToLeafValue(claims[i]));
     }
   });
 });
@@ -178,7 +238,7 @@ describe('encodeClaimsToLeaves', () => {
 describe('Merkle root reproducibility (T-05-05)', () => {
   it('two independent runs on identical claims produce the same Merkle root', async () => {
     const claims = buildClaimSet(FULL_INPUT);
-    const leaves = encodeClaimsToLeaves(claims);
+    const leaves = await encodeClaimsToLeaves(claims);
 
     const tree1 = await buildMerkleTree(leaves);
     const tree2 = await buildMerkleTree(leaves);
@@ -215,5 +275,115 @@ describe('rootMessageBytes', () => {
     const b1 = rootMessageBytes('root1');
     const b2 = rootMessageBytes('root2');
     expect(b1).not.toEqual(b2);
+  });
+});
+
+// ── Numeric claims (high finding #1) ─────────────────────────────────────────
+
+describe('numeric claims', () => {
+  it('omitting numericClaims yields a claim set identical to the string-only encoding', () => {
+    // The property that means existing credentials need no re-mint.
+    const without = buildClaimSet(FULL_INPUT);
+    const withEmpty = buildClaimSet({ ...FULL_INPUT, numericClaims: {} });
+    const withNull = buildClaimSet({ ...FULL_INPUT, numericClaims: null });
+
+    expect(withEmpty).toEqual(without);
+    expect(withNull).toEqual(without);
+    // Serialised shape matters, not just deep equality: a stray `kind` key would
+    // change the stored JSON even where the leaf value did not.
+    expect(JSON.stringify(withEmpty)).toBe(JSON.stringify(without));
+    for (const c of without) {
+      expect(Object.keys(c).sort()).toEqual(['name', 'value']);
+    }
+  });
+
+  it('string-only Merkle roots are unchanged by the numeric-claim feature', async () => {
+    const claims = buildClaimSet(FULL_INPUT);
+    const leaves = await encodeClaimsToLeaves(claims);
+    const padded = [...leaves];
+    while (padded.length < 16) padded.push(0n);
+    const { root } = await buildMerkleTree(padded);
+
+    // Pinned value captured from the encoding before numeric claims existed.
+    // If this changes, every already-minted credential silently stops verifying.
+    expect(root).toBe(PINNED_STRING_ONLY_ROOT);
+  });
+
+  it('appends numeric claims after the string fields, sorted by name', () => {
+    const claims = buildClaimSet({
+      ...FULL_INPUT,
+      numericClaims: { publicationCount: 34, citationCount: 2841 },
+    });
+    const names = claims.map((c) => c.name);
+    expect(names.slice(-2)).toEqual(['citationCount', 'publicationCount']);
+    expect(claims.filter((c) => c.kind === 'numeric')).toHaveLength(2);
+  });
+
+  it('is insensitive to numericClaims key-insertion order', () => {
+    const a = buildClaimSet({ ...FULL_INPUT, numericClaims: { b: 2, a: 1 } });
+    const b = buildClaimSet({ ...FULL_INPUT, numericClaims: { a: 1, b: 2 } });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it('accepts numbers, bigints, and decimal strings identically', () => {
+    const asNum = buildClaimSet({ ...FULL_INPUT, numericClaims: { n: 42 } });
+    const asBig = buildClaimSet({ ...FULL_INPUT, numericClaims: { n: 42n } });
+    const asStr = buildClaimSet({ ...FULL_INPUT, numericClaims: { n: '42' } });
+    expect(JSON.stringify(asNum)).toBe(JSON.stringify(asBig));
+    expect(JSON.stringify(asNum)).toBe(JSON.stringify(asStr));
+  });
+
+  describe('bounds', () => {
+    it('rejects values at or above 2^64 — the comparator cannot accept them', () => {
+      expect(() =>
+        buildClaimSet({ ...FULL_INPUT, numericClaims: { n: MAX_NUMERIC_CLAIM_VALUE } }),
+      ).toThrow(/2\^64/);
+    });
+
+    it('accepts the largest in-range value', () => {
+      const claims = buildClaimSet({
+        ...FULL_INPUT,
+        numericClaims: { n: MAX_NUMERIC_CLAIM_VALUE - 1n },
+      });
+      expect(claims[claims.length - 1].value).toBe((MAX_NUMERIC_CLAIM_VALUE - 1n).toString(10));
+    });
+
+    it('rejects negatives and non-integers', () => {
+      expect(() => buildClaimSet({ ...FULL_INPUT, numericClaims: { n: -1 } })).toThrow();
+      expect(() => buildClaimSet({ ...FULL_INPUT, numericClaims: { n: 1.5 } })).toThrow(/integer/i);
+      expect(() => buildClaimSet({ ...FULL_INPUT, numericClaims: { n: 'abc' } })).toThrow();
+    });
+  });
+
+  describe('commitment', () => {
+    it('commits a numeric value with Poseidon, not SHA-256', async () => {
+      const claim: Claim = { name: 'citationCount', value: '2841', kind: 'numeric' };
+      expect(await claimValueCommitment(claim)).toBe(
+        await poseidonHash([NUMERIC_VALUE_TAG, 2841n]),
+      );
+      // Distinct from the string rule, so the two kinds cannot be conflated.
+      expect(await claimValueCommitment(claim)).not.toBe(claimValueHash('2841'));
+    });
+
+    it('still uses SHA-256 for string claims', async () => {
+      const claim: Claim = { name: 'title', value: 'BSc' };
+      expect(await claimValueCommitment(claim)).toBe(claimValueHash('BSc'));
+      expect(isNumericClaim(claim)).toBe(false);
+    });
+
+    it('is collision-distinct across numeric values', async () => {
+      expect(await numericValueHash(1n)).not.toBe(await numericValueHash(2n));
+    });
+  });
+
+  it('the circuit bakes in the same NUMERIC_VALUE_TAG this module uses', () => {
+    // The tag is a compile-time literal in the .circom source. If the two drift,
+    // every numeric predicate proof fails at witness generation with no obvious
+    // cause — so pin them against each other here.
+    const circuitSrc = fs.readFileSync(
+      path.resolve(__dirname, '../../circuits/merkle_inclusion.circom'),
+      'utf8',
+    );
+    expect(circuitSrc).toContain(NUMERIC_VALUE_TAG.toString(10));
   });
 });

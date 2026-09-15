@@ -31,11 +31,13 @@ import { Test } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { IssuerKeyService } from '../crypto/issuer-key.service';
+import { IssuerRegistryService } from '../crypto/issuer-registry.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { LocalLedgerService } from '../ledger/local-ledger.service';
 import { IdentityService } from '../modules/identity/identity.service';
 import { CredentialsService } from '../modules/credentials/credentials.service';
 import { ZkProofsService } from '../modules/zk-proofs/zk-proofs.service';
+import { ProverPool } from '../modules/zk-proofs/prover.pool';
 
 // ── Test identifiers ──────────────────────────────────────────────────────────
 
@@ -54,6 +56,7 @@ let zkProofsService: ZkProofsService;
 
 // Captured from each step for downstream assertions
 let researcherDid = '';
+let researcherId = '';
 let sbtId = '';
 let zkProofId = '';
 let mintedOnChainTxHash: string | null = null;
@@ -70,11 +73,13 @@ beforeAll(
         PrismaService,
         CryptoService,
         IssuerKeyService,
+        IssuerRegistryService,
         // Bind the abstract LedgerService token to the real hash-chain implementation
         { provide: LedgerService, useClass: LocalLedgerService },
         IdentityService,
         CredentialsService,
         ZkProofsService,
+        ProverPool,
       ],
     }).compile();
 
@@ -123,6 +128,9 @@ afterAll(
           });
       }
     } finally {
+      // Terminate proving child processes before disconnecting, or they outlive
+      // the suite and the runner never exits.
+      await moduleRef?.get(ProverPool)?.onModuleDestroy().catch(() => undefined);
       await prisma.$disconnect();
     }
   },
@@ -145,6 +153,7 @@ describe('HRD-03: Full real-crypto onboarding flow', () => {
 
     // Capture DID for downstream steps (must persist before assertions)
     researcherDid = result.did;
+    researcherId = result.researcher.id;
 
     // DID shape: did:ub:z6Mk… (base58btc multibase + Ed25519 multicodec prefix)
     expect(result.did).toMatch(/^did:ub:z6Mk/);
@@ -207,13 +216,18 @@ describe('HRD-03: Full real-crypto onboarding flow', () => {
     async () => {
       expect(sbtId).toBeTruthy();
 
-      const proof = await zkProofsService.prove({
-        credentialId: sbtId,
-        disclosedClaimName: 'fieldOfStudy',
-        appName: 'integration-test-app',
-        consentWindow: 'forever',
-        predicateEnabled: false,
-      });
+      // prove() now takes the acting researcher's id so it can enforce that the
+      // credential belongs to the caller (critical finding #1).
+      const proof = await zkProofsService.prove(
+        {
+          credentialId: sbtId,
+          disclosedClaimName: 'fieldOfStudy',
+          appName: 'integration-test-app',
+          consentWindow: 'forever',
+          predicateEnabled: false,
+        },
+        researcherId,
+      );
 
       // Capture ZkProof row ID for step 5 verify
       zkProofId = proof.id;

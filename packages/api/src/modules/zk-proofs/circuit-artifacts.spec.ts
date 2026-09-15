@@ -8,7 +8,12 @@
  * Covers:
  *   ZKP-06  Artifact existence + JSON parse + nPublic/protocol assertions
  *   ZKP-06  End-to-end fullProve → groth16.verify round-trip
- *   ZKP-06  Public-signal ordering contract (root === publicSignals[1])
+ *   ZKP-06  Public-signal ordering contract, asserted with distinct probe values
+ *           so each index is pinned to a specific signal rather than assumed
+ *
+ * v2 (critical finding #3): the circuit now takes claimNameHash as a PUBLIC input
+ * and claimValueHash as a private one, rebuilding the leaf in-circuit. nPublic
+ * went 4 -> 5 and every index after [0] shifted by one.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -17,7 +22,12 @@ import * as fs from 'fs';
 import * as snarkjs from 'snarkjs';
 
 import { buildMerkleTree, generateInclusionProof } from '../../crypto/merkle';
-import { claimToFieldElement, buildClaimSet } from '../../crypto/claim-encoding';
+import {
+  buildClaimSet,
+  claimNameHash,
+  claimValueHash,
+  encodeClaimsToLeaves,
+} from '../../crypto/claim-encoding';
 
 // ── Artifact paths ─────────────────────────────────────────────────────────────
 //   __dirname = packages/api/src/modules/zk-proofs
@@ -29,11 +39,13 @@ const WASM_PATH  = path.join(CIRCUITS_DIR, 'merkle_inclusion_js', 'merkle_inclus
 const ZKEY_PATH  = path.join(CIRCUITS_DIR, 'merkle_inclusion_final.zkey');
 const VKEY_PATH  = path.join(CIRCUITS_DIR, 'verification_key.json');
 
-// Public-signal index constants (matches Pattern 5 in 06-RESEARCH.md)
-const IDX_PREDICATE_RESULT = 0;
-const IDX_ROOT             = 1;
-const IDX_THRESHOLD        = 2;
-const IDX_PREDICATE_ENABLED = 3;
+// Public-signal index constants — v2 ordering: outputs first, then public inputs
+// in template declaration order (claimNameHash, root, threshold, predicateEnabled).
+const IDX_PREDICATE_RESULT  = 0;
+const IDX_CLAIM_NAME_HASH   = 1;
+const IDX_ROOT              = 2;
+const IDX_THRESHOLD         = 3;
+const IDX_PREDICATE_ENABLED = 4;
 
 // ── Circuit depth constant (must match MerkleInclusionProof(4)) ───────────────
 const CIRCUIT_DEPTH = 4;
@@ -64,9 +76,9 @@ describe('ZKP-06: committed artifact existence and metadata', () => {
     expect(() => JSON.parse(raw)).not.toThrow();
   });
 
-  it('verification_key.json has nPublic === 4', () => {
+  it('verification_key.json has nPublic === 5 (v2 adds claimNameHash)', () => {
     const vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
-    expect(vkey.nPublic).toBe(4);
+    expect(vkey.nPublic).toBe(5);
   });
 
   it('verification_key.json has protocol === "groth16"', () => {
@@ -88,7 +100,7 @@ describe('ZKP-06: end-to-end Groth16 fullProve → verify round-trip', () => {
   it(
     'produces a valid Groth16 proof that groth16.verify accepts',
     async () => {
-      // 1. Build some real claim leaf values
+      // 1. Build real claim leaf values under the v2 encoding
       const claims = buildClaimSet({
         credentialType: 'AcademicDegree',
         fieldOfStudy:   'Computer Science',
@@ -97,8 +109,8 @@ describe('ZKP-06: end-to-end Groth16 fullProve → verify round-trip', () => {
         issuer:         'did:urid:issuer456',
         title:          'Bachelor of Science',
       });
-      // encodes all 6 claims to leaf values
-      const leafValues = claims.map(c => claimToFieldElement(c));
+      // leafValue = poseidon([nameHash, valueHash]) for each claim
+      const leafValues = await encodeClaimsToLeaves(claims);
 
       // 2. Pre-pad to exactly 2^4 = 16 leaves so the JS tree depth is fixed at 4
       //    (matches the circuit's MerkleInclusionProof(4))
@@ -118,16 +130,24 @@ describe('ZKP-06: end-to-end Groth16 fullProve → verify round-trip', () => {
       expect(inclusionProof.siblings).toHaveLength(CIRCUIT_DEPTH);
       expect(inclusionProof.pathBits).toHaveLength(CIRCUIT_DEPTH);
 
-      // 5. Build the witness object (signal names must EXACTLY match .circom)
-      //    Hex siblings and root converted to decimal strings per Pattern 6.
+      // 5. Build the witness object (signal names must EXACTLY match .circom).
+      //    A distinctive threshold makes the index-mapping assertions below
+      //    unambiguous — no two public signals share a value.
+      const PROBE_THRESHOLD = '777777';
+      const expectedNameHash = claimNameHash(claims[0].name).toString(10);
       const witness = {
         // Private signals
-        leafValue:    paddedLeaves[0].toString(10),
-        pathElements: inclusionProof.siblings.map(hexToDecStr),
-        pathIndices:  inclusionProof.pathBits.map(b => b.toString()),
+        claimValueHash: claimValueHash(claims[0].value).toString(10),
+        // Required since the predicate became numeric. claims[0] is a string
+        // claim proven with predicateEnabled=0, so the circuit multiplies the
+        // numeric binding constraint out and this filler is never consulted.
+        numericValue:   '0',
+        pathElements:   inclusionProof.siblings.map(hexToDecStr),
+        pathIndices:    inclusionProof.pathBits.map(b => b.toString()),
         // Public signals (also provided as inputs so fullProve can compute output)
+        claimNameHash:    expectedNameHash,
         root:             hexToDecStr(tree.root),
-        threshold:        '0',
+        threshold:        PROBE_THRESHOLD,
         predicateEnabled: '0',
       };
 
@@ -145,23 +165,24 @@ describe('ZKP-06: end-to-end Groth16 fullProve → verify round-trip', () => {
       expect(verified).toBe(true);
 
       // 8. Assert public-signal count
-      expect(publicSignals).toHaveLength(4);
+      expect(publicSignals).toHaveLength(5);
 
-      // 9. Assert public-signal ordering contract:
-      //    publicSignals[IDX_ROOT] must equal the tree root.
-      //    Both sides must be compared in the same representation — we convert
-      //    the decimal publicSignals[1] back to hex and compare with tree.root.
-      const rootFromSignals = BigInt(publicSignals[IDX_ROOT]).toString(16);
-      expect(rootFromSignals).toBe(tree.root);
-
-      // 10. predicateEnabled=0 -> predicateResult must be 1 (passthrough)
-      expect(publicSignals[IDX_PREDICATE_RESULT]).toBe('1');
-
-      // 11. threshold and predicateEnabled echoed back
-      expect(publicSignals[IDX_THRESHOLD]).toBe('0');
+      // 9. Assert the full public-signal ordering contract. Every value here is
+      //    distinct, so these assertions pin each index to one specific signal.
+      expect(publicSignals[IDX_PREDICATE_RESULT]).toBe('1'); // predicate disabled -> passthrough
+      expect(publicSignals[IDX_CLAIM_NAME_HASH]).toBe(expectedNameHash);
+      expect(BigInt(publicSignals[IDX_ROOT]).toString(16)).toBe(tree.root);
+      expect(publicSignals[IDX_THRESHOLD]).toBe(PROBE_THRESHOLD);
       expect(publicSignals[IDX_PREDICATE_ENABLED]).toBe('0');
+
+      // 10. The claim name is now recoverable from the proof alone — this is the
+      //     property finding #3 was about. A verifier that is told "this proves
+      //     fieldOfStudy" can refute the claim by recomputing the hash.
+      expect(publicSignals[IDX_CLAIM_NAME_HASH]).not.toBe(
+        claimNameHash('someOtherClaim').toString(10),
+      );
     },
-    // Groth16 fullProve for ~1263 constraints takes 1-5 s on modern hardware
+    // Groth16 fullProve for ~1500 constraints takes 1-5 s on modern hardware
     30_000,
   );
 });

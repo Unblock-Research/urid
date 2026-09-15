@@ -3,8 +3,15 @@ import { AppModule } from "./app.module";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  app.enableCors({ origin: ["http://localhost:3000", "http://localhost:4200"] });
+  // rawBody: true preserves the exact request bytes on req.rawBody. DIDSig signs
+  // sha256(rawBody), and re-serialising the parsed JSON would not reproduce the
+  // client's bytes (key order, whitespace, number formatting), so every signed
+  // request would fail verification.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
+  app.enableCors({
+    origin: ["http://localhost:3000", "http://localhost:4200"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  });
   app.setGlobalPrefix("api");
   
   const config = new DocumentBuilder()

@@ -3,7 +3,7 @@
  *
  * Covers:
  *   ZKP-01  prove() produces a real Groth16 proof groth16.verify accepts
- *   ZKP-02  publicSignals[1] equals the stored credential root; verify() valid:true;
+ *   ZKP-02  publicSignals[2] equals the stored credential root; verify() valid:true;
  *           BOTH snark AND Ed25519 signature required (corrupt sig → valid:false)
  *   ZKP-03  non-member claim throws; tampered publicSignals → valid:false
  *   ZKP-05  static assertion: no sha256+stringify legacy pattern in service source
@@ -13,7 +13,7 @@
  * Groth16 proof is bound to a genuinely-signed credential root.
  */
 
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -21,11 +21,14 @@ import * as snarkjs from 'snarkjs';
 import { bytesToHex } from '@noble/hashes/utils';
 
 import { ZkProofsService } from './zk-proofs.service';
+import { ProverPool } from './prover.pool';
 import { CryptoService } from '../../crypto/crypto.service';
 import { IssuerKeyService } from '../../crypto/issuer-key.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   buildClaimSet,
+  claimNameHash,
+  claimValueHash,
   encodeClaimsToLeaves,
   rootMessageBytes,
 } from '../../crypto/claim-encoding';
@@ -40,7 +43,14 @@ const VKEY_PATH = path.join(CIRCUITS_DIR, 'verification_key.json');
 
 // ── Test constants ────────────────────────────────────────────────────────────
 
+// Public-signal indices — v2 contract (see circuit-artifacts.spec.ts)
+const IDX_PREDICATE_RESULT = 0;
+const IDX_CLAIM_NAME_HASH = 1;
+const IDX_ROOT = 2;
+
 const CREDENTIAL_ID = 'test-credential-id-zkp-001';
+const NUMERIC_CREDENTIAL_ID = 'test-credential-id-zkp-numeric';
+const CITATION_COUNT = 2841;
 const RESEARCHER_ID = 'test-researcher-id-zkp-001';
 const TREE_SIZE = 16;
 
@@ -48,8 +58,10 @@ const TREE_SIZE = 16;
 
 let service: ZkProofsService;
 let mockSbt: Record<string, unknown>;
+let numericSbt: Record<string, unknown>;
 let lastCreatedProof: Record<string, unknown> | null = null;
 let proveResult: Record<string, unknown>;
+let proverPool: ProverPool;
 
 // ── Mock PrismaService ────────────────────────────────────────────────────────
 
@@ -59,6 +71,7 @@ const mockPrisma = {
   },
   zkProof: {
     create: vi.fn(),
+    findUnique: vi.fn(),
     findFirst: vi.fn(),
     update: vi.fn().mockResolvedValue({}),
   },
@@ -94,7 +107,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
       });
 
       // Encode to BN254 field elements and pre-pad to 16 (circuit depth = 4)
-      const leaves = encodeClaimsToLeaves(claims);
+      const leaves = await encodeClaimsToLeaves(claims);
       const paddedLeaves: bigint[] = [...leaves];
       while (paddedLeaves.length < TREE_SIZE) paddedLeaves.push(0n);
 
@@ -114,8 +127,36 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
         issuerPublicKey: bytesToHex(keypair.publicKey),
       };
 
+      // ── Step 1b: A second credential carrying a numeric claim ─────────────
+      const numericClaims = buildClaimSet({
+        credentialType: 'ImpactRecord',
+        holderDid: 'did:test:holder-zkp',
+        issuedAt: '2025-01-01T00:00:00.000Z',
+        issuer: 'did:test:issuer-zkp',
+        numericClaims: { citationCount: CITATION_COUNT },
+      });
+      const numericLeaves = await encodeClaimsToLeaves(numericClaims);
+      const numericPadded: bigint[] = [...numericLeaves];
+      while (numericPadded.length < TREE_SIZE) numericPadded.push(0n);
+      const numericTree = await buildMerkleTree(numericPadded);
+      const numericSig = await cryptoSetup.sign(
+        rootMessageBytes(numericTree.root),
+        keypair.privateKey,
+      );
+      numericSbt = {
+        id: NUMERIC_CREDENTIAL_ID,
+        researcherId: RESEARCHER_ID,
+        claims: numericClaims,
+        merkleRoot: numericTree.root,
+        issuerSignature: bytesToHex(numericSig),
+        issuerPublicKey: bytesToHex(keypair.publicKey),
+      };
+
       // ── Step 2: Wire mock Prisma ──────────────────────────────────────────
-      mockPrisma.soulboundToken.findUnique.mockResolvedValue(mockSbt);
+      mockPrisma.soulboundToken.findUnique.mockImplementation(
+        async ({ where }: any) =>
+          where.id === NUMERIC_CREDENTIAL_ID ? numericSbt : mockSbt,
+      );
 
       mockPrisma.zkProof.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
         const row = { id: 'zkproof-test-001', status: 'active', expiresAt: null, ...data };
@@ -123,12 +164,14 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
         return row;
       });
 
+      mockPrisma.zkProof.findUnique.mockImplementation(async () => lastCreatedProof);
       mockPrisma.zkProof.findFirst.mockImplementation(async () => lastCreatedProof);
 
       // ── Step 3: Build NestJS test module ──────────────────────────────────
       const moduleRef = await Test.createTestingModule({
         providers: [
           ZkProofsService,
+          ProverPool,
           CryptoService,
           IssuerKeyService,
           { provide: PrismaService, useValue: mockPrisma },
@@ -137,6 +180,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
 
       await moduleRef.init();
       service = moduleRef.get(ZkProofsService);
+      proverPool = moduleRef.get(ProverPool);
 
       // ── Step 4: Run prove() once for all subsequent test cases ────────────
       // This is the expensive Groth16 step (~1-5 s).
@@ -146,10 +190,15 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
         appName: 'test-app-zkp',
         consentWindow: 'forever',
         predicateEnabled: false,
-      }) as Record<string, unknown>;
+      }, RESEARCHER_ID) as Record<string, unknown>;
     },
     60_000, // 60 s — Groth16 fullProve can take up to 5 s
   );
+
+  afterAll(async () => {
+    // Terminate worker threads, otherwise the process stays alive.
+    await proverPool?.onModuleDestroy();
+  });
 
   // ─────────────────────────────────────────────────────────────────────────
   // ZKP-01: prove() produces a real Groth16 proof
@@ -161,9 +210,9 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
     expect(proof.protocol).toBe('groth16');
   });
 
-  it('ZKP-01: prove() returns publicSignals with length === 4', () => {
+  it('ZKP-01: prove() returns publicSignals with length === 5 (v2 adds claimNameHash)', () => {
     const publicSignals = proveResult.publicSignals as string[];
-    expect(publicSignals).toHaveLength(4);
+    expect(publicSignals).toHaveLength(5);
   });
 
   it(
@@ -184,9 +233,9 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
   // ZKP-02: root binding + full verify() round-trip
   // ─────────────────────────────────────────────────────────────────────────
 
-  it('ZKP-02: publicSignals[1] (decimal root) converts to the stored credential merkleRoot', () => {
+  it('ZKP-02: publicSignals[IDX_ROOT] (decimal root) converts to the stored credential merkleRoot', () => {
     const publicSignals = proveResult.publicSignals as string[];
-    const rootFromSignal = BigInt(publicSignals[1]).toString(16);
+    const rootFromSignal = BigInt(publicSignals[IDX_ROOT]).toString(16);
     expect(rootFromSignal).toBe(mockSbt.merkleRoot as string);
   });
 
@@ -227,17 +276,17 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
         disclosedClaimName: 'nonExistentClaimXYZ123',
         appName: 'test-app-zkp',
         consentWindow: 'forever',
-      }),
+      }, RESEARCHER_ID),
     ).rejects.toThrow();
   });
 
   it(
-    'ZKP-03: tampered publicSignals[1] (root) → groth16.verify fails → verify() returns valid:false',
+    'ZKP-03: tampered publicSignals[IDX_ROOT] → groth16.verify fails → verify() returns valid:false',
     async () => {
       if (!lastCreatedProof) throw new Error('lastCreatedProof not populated');
       const tamperedSignals = [...(lastCreatedProof.publicSignals as string[])];
-      tamperedSignals[1] = '12345678'; // bogus root decimal
-      mockPrisma.zkProof.findFirst.mockResolvedValueOnce({
+      tamperedSignals[IDX_ROOT] = '12345678'; // bogus root decimal
+      mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
         ...lastCreatedProof,
         publicSignals: tamperedSignals,
       });
@@ -246,6 +295,305 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
     },
     30_000,
   );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Critical finding #3: the proof must attest WHICH claim it is about
+  //
+  // Before v2, leafValue was private and no public signal named the claim, so a
+  // valid proof said only "some leaf is in this tree" — true for any holder, and
+  // satisfiable with one of the padding zeros. disclosedClaims.claimName was an
+  // unverified label. These tests pin the binding that replaced it.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('finding #3: the proven claim name is recoverable from the public signals', () => {
+    const publicSignals = proveResult.publicSignals as string[];
+    expect(publicSignals[IDX_CLAIM_NAME_HASH]).toBe(
+      claimNameHash('fieldOfStudy').toString(10),
+    );
+  });
+
+  it('finding #3: the claim VALUE is not recoverable from the public signals', () => {
+    // Selective disclosure: the name is public, the value is not. The value hash
+    // must appear nowhere in the public output.
+    const publicSignals = proveResult.publicSignals as string[];
+    const valueHash = claimValueHash('Computer Science').toString(10);
+    expect(publicSignals).not.toContain(valueHash);
+  });
+
+  it('finding #3: verify() rejects a proof relabelled as a different claim', async () => {
+    // The attack the binding closes: take a genuine proof and change the claim
+    // name recorded next to it, so a relying party is told the proof attests
+    // something it does not.
+    mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
+      ...(lastCreatedProof as Record<string, unknown>),
+      disclosedClaims: {
+        ...((lastCreatedProof as Record<string, unknown>)
+          .disclosedClaims as Record<string, unknown>),
+        claimName: 'title', // genuine proof, dishonest label
+      },
+    });
+
+    const result = await service.verify(proveResult.proofHash as string);
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/disclosed claim name/i);
+  }, 30_000);
+
+  it('finding #3: verify() rejects a proof with no disclosed claim name at all', async () => {
+    mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
+      ...(lastCreatedProof as Record<string, unknown>),
+      disclosedClaims: { credentialId: CREDENTIAL_ID },
+    });
+
+    const result = await service.verify(proveResult.proofHash as string);
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/claim name/i);
+  }, 30_000);
+
+  it('finding #3: a proof for a different claim carries a different name hash', async () => {
+    const other = (await service.prove({
+      credentialId: CREDENTIAL_ID,
+      disclosedClaimName: 'title',
+      appName: 'test-app-zkp',
+      consentWindow: 'forever',
+      predicateEnabled: false,
+    }, RESEARCHER_ID)) as Record<string, unknown>;
+
+    const otherSignals = other.publicSignals as string[];
+    const originalSignals = proveResult.publicSignals as string[];
+
+    expect(otherSignals[IDX_CLAIM_NAME_HASH]).toBe(
+      claimNameHash('title').toString(10),
+    );
+    expect(otherSignals[IDX_CLAIM_NAME_HASH]).not.toBe(
+      originalSignals[IDX_CLAIM_NAME_HASH],
+    );
+    // Same credential, so the root is shared — only the claim identity differs.
+    expect(otherSignals[IDX_ROOT]).toBe(originalSignals[IDX_ROOT]);
+
+    // Restore the shared fixture for the tests that follow.
+    lastCreatedProof = proveResult as Record<string, unknown>;
+  }, 60_000);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Critical finding #2: proofHash must identify exactly one proof
+  //
+  // The old derivation hashed publicSignals alone. Every public signal is
+  // identical across repeated proofs of one credential, so two proofs collided on
+  // a single handle — and because verify() resolved that handle with findFirst,
+  // revoking one row left its twin answering in its place.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('finding #2: two proofs over the same credential and claim get different handles', async () => {
+    const first = proveResult.proofHash as string;
+
+    const second = (await service.prove({
+      credentialId: CREDENTIAL_ID,
+      disclosedClaimName: 'fieldOfStudy',
+      appName: 'test-app-zkp',
+      consentWindow: 'forever',
+      predicateEnabled: false,
+    }, RESEARCHER_ID)) as Record<string, unknown>;
+
+    // Same credential, same claim, same options — identical public signals...
+    expect((second.publicSignals as string[]).join('|')).toBe(
+      (proveResult.publicSignals as string[]).join('|'),
+    );
+    // ...but distinct handles, because the randomised Groth16 proof is hashed too.
+    expect(second.proofHash).not.toBe(first);
+
+    // Restore the shared fixture for the tests that follow.
+    lastCreatedProof = proveResult as Record<string, unknown>;
+  }, 60_000);
+
+  it('finding #2: a revoked proof reports its status instead of verifying', async () => {
+    mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
+      ...(lastCreatedProof as Record<string, unknown>),
+      status: 'revoked',
+    });
+
+    const result = await service.verify(proveResult.proofHash as string);
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/revoked/i);
+  }, 30_000);
+
+  it('finding #2: verify() resolves the handle with findUnique, not findFirst', async () => {
+    // findFirst({ proofHash, status: 'active' }) is what allowed a revoked row to
+    // be skipped in favour of an active twin. Pin the query shape so the bypass
+    // cannot reappear.
+    const servicePath = path.resolve(__dirname, './zk-proofs.service.ts');
+    const source = fs.readFileSync(servicePath, 'utf8');
+    expect(source).not.toMatch(/zkProof\.findFirst/);
+    expect(source).toMatch(/zkProof\.findUnique/);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Critical finding #4: revocation must be honoured by the proof path
+  //
+  // A Groth16 proof and an Ed25519 signature are both permanently valid once
+  // generated — neither encodes whether the credential is still in good standing.
+  // These tests pin the explicit revocation check that makes revocation
+  // enforceable through proofs.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('finding #4: verify() returns valid:false once the credential is revoked', async () => {
+    const wasRevoked = mockSbt.revoked;
+    try {
+      mockSbt.revoked = true;
+      const result = await service.verify(proveResult.proofHash as string);
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/revoked/i);
+    } finally {
+      mockSbt.revoked = wasRevoked;
+    }
+  }, 30_000);
+
+  it('finding #4: the same proof verifies again once the credential is un-revoked', async () => {
+    // Guards against the revocation check being conflated with an unrelated
+    // failure — the proof itself is still cryptographically sound.
+    const result = await service.verify(proveResult.proofHash as string);
+    expect(result.valid).toBe(true);
+  }, 30_000);
+
+  it('finding #4: prove() refuses to mint a new proof over a revoked credential', async () => {
+    const wasRevoked = mockSbt.revoked;
+    try {
+      mockSbt.revoked = true;
+      await expect(
+        service.prove({
+          credentialId: CREDENTIAL_ID,
+          disclosedClaimName: 'fieldOfStudy',
+          appName: 'test-app-zkp',
+          consentWindow: 'forever',
+          predicateEnabled: false,
+        }, RESEARCHER_ID),
+      ).rejects.toThrow(/revoked/i);
+    } finally {
+      mockSbt.revoked = wasRevoked;
+    }
+  }, 30_000);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // High finding #1: the threshold predicate must mean something
+  //
+  // It previously compared claimValueHash — a ~2^254 SHA-256 element — against
+  // the threshold, while GreaterEqThan(64) requires inputs below 2^64. Enabling
+  // it on any real claim failed witness generation, and verify() never checked
+  // the threshold signals against the request, so a vacuous pass and a proven
+  // bound were indistinguishable.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('finding #1: proves a numeric claim meets a threshold it clears', async () => {
+    const res = (await service.prove(
+      {
+        credentialId: NUMERIC_CREDENTIAL_ID,
+        disclosedClaimName: 'citationCount',
+        appName: 'test-app-zkp',
+        consentWindow: 'forever',
+        threshold: '1000',
+        predicateEnabled: true,
+      },
+      RESEARCHER_ID,
+    )) as Record<string, unknown>;
+
+    const verdict = await service.verify(res.proofHash as string);
+    expect(verdict.valid).toBe(true);
+    expect(verdict.predicate).toEqual({ enabled: true, threshold: '1000' });
+
+    lastCreatedProof = proveResult as Record<string, unknown>;
+  }, 120_000);
+
+  it('finding #1: cannot prove a threshold the value does not clear', async () => {
+    // 2841 >= 5000 is false, so the circuit's predicateResult is 0 and verify()
+    // refuses the proof. The prover cannot talk their way past the comparator.
+    const res = (await service.prove(
+      {
+        credentialId: NUMERIC_CREDENTIAL_ID,
+        disclosedClaimName: 'citationCount',
+        appName: 'test-app-zkp',
+        consentWindow: 'forever',
+        threshold: '5000',
+        predicateEnabled: true,
+      },
+      RESEARCHER_ID,
+    )) as Record<string, unknown>;
+
+    const verdict = await service.verify(res.proofHash as string);
+    expect(verdict.valid).toBe(false);
+    expect(verdict.reason).toMatch(/predicate not satisfied/i);
+
+    lastCreatedProof = proveResult as Record<string, unknown>;
+  }, 120_000);
+
+  it('finding #1: the numeric value is bound to the credential, not chosen by the prover', async () => {
+    // The circuit recomputes poseidon([NUMERIC_VALUE_TAG, numericValue]) and
+    // constrains it to the committed value half, so a substituted number cannot
+    // produce a satisfiable witness at all.
+    const tampered = { ...(numericSbt as any) };
+    tampered.claims = (numericSbt.claims as any[]).map((c) =>
+      c.name === 'citationCount' ? { ...c, value: '999999' } : c,
+    );
+    mockPrisma.soulboundToken.findUnique.mockResolvedValueOnce(tampered);
+
+    // The inflated value changes the leaf, so the recomputed tree no longer
+    // matches the stored root — rejected before proving even begins.
+    await expect(
+      service.prove(
+        {
+          credentialId: NUMERIC_CREDENTIAL_ID,
+          disclosedClaimName: 'citationCount',
+          appName: 'test-app-zkp',
+          consentWindow: 'forever',
+          threshold: '900000',
+          predicateEnabled: true,
+        },
+        RESEARCHER_ID,
+      ),
+    ).rejects.toThrow(/root mismatch/i);
+  }, 60_000);
+
+  it('finding #1: refuses the predicate on a string claim instead of emitting an unusable proof', async () => {
+    await expect(
+      service.prove(
+        {
+          credentialId: CREDENTIAL_ID,
+          disclosedClaimName: 'fieldOfStudy',
+          appName: 'test-app-zkp',
+          consentWindow: 'forever',
+          threshold: '10',
+          predicateEnabled: true,
+        },
+        RESEARCHER_ID,
+      ),
+    ).rejects.toThrow(/not numeric/i);
+  }, 60_000);
+
+  it('finding #1: verify() reports a vacuous predicate rather than implying a bound', async () => {
+    // proveResult was generated with predicateEnabled=false, so predicateResult
+    // is 1 for free. A relying party must be able to see that.
+    const verdict = await service.verify(proveResult.proofHash as string);
+    expect(verdict.valid).toBe(true);
+    expect(verdict.predicate).toEqual({ enabled: false, threshold: '0' });
+  }, 30_000);
+
+  it('finding #1: verify() rejects a proof whose threshold signal was relabelled', async () => {
+    // Claiming a higher bound than was actually proven.
+    mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
+      ...(lastCreatedProof as Record<string, unknown>),
+      disclosedClaims: {
+        ...((lastCreatedProof as Record<string, unknown>)
+          .disclosedClaims as Record<string, unknown>),
+        predicateEnabled: true,
+        threshold: '100000',
+      },
+    });
+
+    const verdict = await service.verify(proveResult.proofHash as string);
+    expect(verdict.valid).toBe(false);
+    expect(verdict.reason).toMatch(/predicate flag|threshold/i);
+  }, 30_000);
 
   // ─────────────────────────────────────────────────────────────────────────
   // ZKP-05: static — no legacy sha256+stringify pattern

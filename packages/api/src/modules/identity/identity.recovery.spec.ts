@@ -1,313 +1,356 @@
-import { describe, it, expect, vi } from 'vitest';
-import { IdentityService } from './identity.service';
-import { CryptoService } from '../../crypto/crypto.service';
-import { createHash } from 'crypto';
+/**
+ * identity.recovery.spec.ts — client-side Shamir social recovery (high finding #2).
+ *
+ * The previous suite tested a server that generated the secret, split it, held
+ * every ciphertext, and reconstructed on demand. That capability is gone, so
+ * these tests cover the arrangement that replaced it:
+ *
+ *   - the holder's device does all the crypto (crypto/recovery.ts)
+ *   - the server stores ciphertexts and validates only their structure
+ *   - reconstruction happens on the holder's device
+ *
+ * The central assertion is negative: nothing the server receives or returns is
+ * sufficient to reconstruct the secret. That is the whole point of the change,
+ * and it is the kind of property that quietly regresses, so it is checked
+ * directly rather than inferred from the API shape.
+ */
 
-// ---------------------------------------------------------------------------
-// Test constants
-// ---------------------------------------------------------------------------
+import { describe, it, expect, vi } from 'vitest';
+
+import { IdentityService } from './identity.service';
+import {
+  computeVerificationTag,
+  decryptShard,
+  isEncryptedShardEnvelope,
+  prepareRecovery,
+  reconstructSecret,
+} from '../../crypto/recovery';
 
 const TEST_DID = 'did:ub:z6MkRecoveryTest00000001';
 
-// ---------------------------------------------------------------------------
-// Fake PrismaService for recovery tests
-// A mutable shard store is shared across create/findMany/deleteMany so the
-// service's full setup→recover flow works end-to-end without a real DB.
-// ---------------------------------------------------------------------------
+const GUARDIANS = [
+  { name: 'Aria M. (sister)', kind: 'Personal' },
+  { name: 'UCSF Weill IT', kind: 'Institutional' },
+  { name: 'iPhone 15 Pro', kind: 'Device' },
+  { name: 'Ledger Nano X', kind: 'Device' },
+  { name: 'r.tanaka.eth', kind: 'Peer' },
+];
 
-function makeFakePrismaForRecovery() {
+// ── Fake Prisma with an in-memory shard table ────────────────────────────────
+
+function makeFakePrisma() {
   const researcherRow = {
     id: 'researcher-uuid-recovery-001',
     handle: 'alice',
     did: TEST_DID,
     displayName: 'Alice',
-    createdAt: new Date(),
-    updatedAt: new Date(),
   };
-
-  // In-memory shard store — deleteMany clears, create appends, findMany reads
   const shards: Array<Record<string, unknown>> = [];
-  let shardCounter = 0;
 
   return {
-    researcher: {
-      findUnique: vi.fn().mockResolvedValue(researcherRow),
-    },
+    researcher: { findUnique: vi.fn().mockResolvedValue(researcherRow) },
     recoveryShard: {
-      create: vi.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
-        const row = { id: `shard-${++shardCounter}`, ...data };
-        shards.push(row);
-        return row;
+      createMany: vi.fn(async ({ data }: { data: Record<string, unknown>[] }) => {
+        shards.push(...data);
+        return { count: data.length };
       }),
-      findMany: vi.fn().mockImplementation(async () => [...shards]),
-      deleteMany: vi.fn().mockImplementation(async () => {
+      findMany: vi.fn(async () =>
+        [...shards].sort(
+          (a, b) => (a.shardIndex as number) - (b.shardIndex as number),
+        ),
+      ),
+      deleteMany: vi.fn(async () => {
+        const count = shards.length;
         shards.length = 0;
-        return { count: 0 };
+        return { count };
       }),
     },
-  };
+    _shards: shards,
+  } as any;
 }
 
-const fakeLedger = {
-  registerDid: vi.fn(),
-  mintSbt: vi.fn(),
-  revokeSbt: vi.fn(),
-  getTransaction: vi.fn(),
-};
-
-function sha256hex(buf: Buffer): string {
-  return createHash('sha256').update(buf).digest('hex');
+function makeService(prisma: any): IdentityService {
+  return new (IdentityService as any)(prisma, {}, {}) as IdentityService;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
 
-describe('IdentityService — Shamir Recovery', () => {
-  /**
-   * (1) setupRecovery with N=5 guardians and threshold T=3 calls
-   *     recoveryShard.create exactly 5 times; each data payload has
-   *     non-null encryptedShard (parseable JSON envelope {v,alg,iv,authTag,
-   *     ciphertext,tag}), an integer shardIndex, and threshold === 3.
-   */
-  it('(1) setupRecovery N=5 T=3 creates exactly 5 shard rows, each with valid encryptedShard + shardIndex + threshold', async () => {
-    const fakePrisma = makeFakePrismaForRecovery();
-    const svc = new IdentityService(
-      fakePrisma as any,
-      fakeLedger as any,
-      new CryptoService() as any,
-    );
+describe('client-side recovery library', () => {
+  it('round-trips: prepare → decrypt T shares → combine', async () => {
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
 
-    const guardians = [
-      { name: 'Alice', kind: 'friend' },
-      { name: 'Bob', kind: 'colleague' },
-      { name: 'Carol', kind: 'family' },
-      { name: 'Dave', kind: 'friend' },
-      { name: 'Eve', kind: 'colleague' },
-    ];
+    const stored = prepared.payload.guardians.map((g) => ({
+      shardIndex: g.shardIndex,
+      encryptedShard: g.encryptedShard,
+    }));
+    const submissions = prepared.recoveryKits
+      .slice(0, 3)
+      .map((k) => ({ shardIndex: k.shardIndex, key: k.key }));
 
-    await svc.setupRecovery(TEST_DID, guardians, undefined, 3);
+    const result = await reconstructSecret(stored, submissions, 3);
 
-    expect(fakePrisma.recoveryShard.create).toHaveBeenCalledTimes(5);
-
-    for (const call of fakePrisma.recoveryShard.create.mock.calls as any[]) {
-      const data = call[0].data as Record<string, unknown>;
-
-      // encryptedShard must be a non-null, parseable JSON envelope
-      expect(data.encryptedShard).not.toBeNull();
-      expect(typeof data.encryptedShard).toBe('string');
-      const envelope = JSON.parse(data.encryptedShard as string);
-      expect(envelope.v).toBe(1);
-      expect(envelope.alg).toBe('aes-256-gcm');
-      expect(typeof envelope.iv).toBe('string');
-      expect(typeof envelope.authTag).toBe('string');
-      expect(typeof envelope.ciphertext).toBe('string');
-      expect(typeof envelope.tag).toBe('string');
-
-      // shardIndex must be a non-negative integer
-      expect(Number.isInteger(data.shardIndex)).toBe(true);
-      expect(data.shardIndex as number).toBeGreaterThanOrEqual(0);
-
-      // threshold must equal the T we supplied
-      expect(data.threshold).toBe(3);
-    }
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.secretHex).toBe(prepared.secretHex);
   });
 
-  /**
-   * (2) Round-trip: call setupRecovery with a KNOWN 32-byte secret; take T
-   *     of the returned recovery kits and call recover() — the reconstructed
-   *     secret hex must equal the original.
-   */
-  it('(2) round-trip: recover(T valid submissions) reconstructs the original known secret hex', async () => {
-    const fakePrisma = makeFakePrismaForRecovery();
-    const svc = new IdentityService(
-      fakePrisma as any,
-      fakeLedger as any,
-      new CryptoService() as any,
-    );
+  it('reconstructs from ANY T of the N guardians', async () => {
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+    const stored = prepared.payload.guardians.map((g) => ({
+      shardIndex: g.shardIndex,
+      encryptedShard: g.encryptedShard,
+    }));
 
-    // A fixed 32-byte secret expressed as 64 hex chars
-    const knownSecretHex = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2';
+    // Guardians 1, 3 and 4 — not the first three.
+    const submissions = [1, 3, 4].map((i) => ({
+      shardIndex: prepared.recoveryKits[i].shardIndex,
+      key: prepared.recoveryKits[i].key,
+    }));
 
-    const guardians = [
-      { name: 'Alice', kind: 'friend' },
-      { name: 'Bob', kind: 'colleague' },
-      { name: 'Carol', kind: 'family' },
-    ];
-
-    // N=3, T=2
-    const result = await svc.setupRecovery(TEST_DID, guardians, knownSecretHex, 2);
-
-    // Submit T=2 of the 3 kits (indices 0 and 1)
-    const submissions = result.recoveryKits.slice(0, 2).map(
-      (kit: { shardIndex: number; key: string }) => ({ shardIndex: kit.shardIndex, key: kit.key }),
-    );
-
-    const recovery = await svc.recover(TEST_DID, submissions);
-
-    expect(recovery.success).toBe(true);
-    expect(recovery.secret).toBe(knownSecretHex);
+    const result = await reconstructSecret(stored, submissions, 3);
+    expect(result.success).toBe(true);
   });
 
-  /**
-   * (3) recover with >=T valid submissions returns success:true and
-   *     verified:true; sha256(reconstructed secret) must equal the stored
-   *     verification tag from the encryptedShard envelope.
-   */
-  it('(3) recover >=T valid submissions returns success:true and sha256(secret) === stored tag', async () => {
-    const fakePrisma = makeFakePrismaForRecovery();
-    const svc = new IdentityService(
-      fakePrisma as any,
-      fakeLedger as any,
-      new CryptoService() as any,
-    );
+  it('fails below the threshold without producing partial material', async () => {
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+    const stored = prepared.payload.guardians.map((g) => ({
+      shardIndex: g.shardIndex,
+      encryptedShard: g.encryptedShard,
+    }));
+    const submissions = prepared.recoveryKits
+      .slice(0, 2)
+      .map((k) => ({ shardIndex: k.shardIndex, key: k.key }));
 
-    // Different known secret to avoid cross-test confusion
-    const knownSecretHex = 'deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe';
+    const result = await reconstructSecret(stored, submissions, 3);
 
-    const guardians = [
-      { name: 'Alice', kind: 'friend' },
-      { name: 'Bob', kind: 'colleague' },
-      { name: 'Carol', kind: 'family' },
-    ];
-
-    const result = await svc.setupRecovery(TEST_DID, guardians, knownSecretHex, 2);
-
-    // Fetch the verification tag directly from the stored envelope
-    const storedShards = await fakePrisma.recoveryShard.findMany();
-    const firstEnvelope = JSON.parse(storedShards[0].encryptedShard as string);
-    const storedTag: string = firstEnvelope.tag;
-
-    const submissions = result.recoveryKits.slice(0, 2).map(
-      (kit: { shardIndex: number; key: string }) => ({ shardIndex: kit.shardIndex, key: kit.key }),
-    );
-
-    const recovery = await svc.recover(TEST_DID, submissions);
-
-    expect(recovery.success).toBe(true);
-    expect(recovery.verified).toBe(true);
-
-    // sha256 of the reconstructed secret must match the stored tag
-    const reconstructedBuffer = Buffer.from(recovery.secret as string, 'hex');
-    expect(sha256hex(reconstructedBuffer)).toBe(storedTag);
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(prepared.secretHex);
   });
 
-  /**
-   * (4) recover with <T valid submissions (T-1) returns success:false.
-   *     The JSON-stringified response must contain NONE of:
-   *     the original secret hex, any guardian key hex.
-   */
-  it('(4) recover <T submissions returns failure and leaks no secret or key bytes', async () => {
-    const fakePrisma = makeFakePrismaForRecovery();
-    const svc = new IdentityService(
-      fakePrisma as any,
-      fakeLedger as any,
-      new CryptoService() as any,
-    );
+  it('ignores a wrong guardian key rather than counting it toward the threshold', async () => {
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+    const stored = prepared.payload.guardians.map((g) => ({
+      shardIndex: g.shardIndex,
+      encryptedShard: g.encryptedShard,
+    }));
 
-    const knownSecretHex = 'cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe';
-
-    const guardians = [
-      { name: 'Alice', kind: 'friend' },
-      { name: 'Bob', kind: 'colleague' },
-      { name: 'Carol', kind: 'family' },
-    ];
-
-    // T=3, so T-1=2 submissions must fail
-    const result = await svc.setupRecovery(TEST_DID, guardians, knownSecretHex, 3);
-
-    // Only submit T-1 = 2 valid submissions
-    const submissions = result.recoveryKits.slice(0, 2).map(
-      (kit: { shardIndex: number; key: string }) => ({ shardIndex: kit.shardIndex, key: kit.key }),
-    );
-
-    const recovery = await svc.recover(TEST_DID, submissions);
-
-    expect(recovery.success).toBe(false);
-
-    const responseStr = JSON.stringify(recovery);
-
-    // Must not contain the original secret
-    expect(responseStr).not.toContain(knownSecretHex);
-
-    // Must not contain any guardian key
-    for (const kit of result.recoveryKits) {
-      expect(responseStr).not.toContain(kit.key);
-    }
-
-    // Must not contain a 'secret' field at all
-    expect(recovery).not.toHaveProperty('secret');
-  });
-
-  /**
-   * (5) A wrong/garbled guardian key is rejected (GCM auth failure) and
-   *     does NOT count toward the threshold.
-   *     Submit T-1 correct + 1 garbled = total T submissions; recover returns failure.
-   */
-  it('(5) garbled guardian key is rejected — T-1 correct + 1 garbled does not meet threshold T', async () => {
-    const fakePrisma = makeFakePrismaForRecovery();
-    const svc = new IdentityService(
-      fakePrisma as any,
-      fakeLedger as any,
-      new CryptoService() as any,
-    );
-
-    const guardians = [
-      { name: 'Alice', kind: 'friend' },
-      { name: 'Bob', kind: 'colleague' },
-      { name: 'Carol', kind: 'family' },
-    ];
-
-    // T=3, N=3 — need all 3 valid to succeed
-    const result = await svc.setupRecovery(TEST_DID, guardians, undefined, 3);
-
-    // T total submissions but shard 2 uses a garbled (all-ff) key
     const submissions = [
-      { shardIndex: result.recoveryKits[0].shardIndex, key: result.recoveryKits[0].key },
-      { shardIndex: result.recoveryKits[1].shardIndex, key: result.recoveryKits[1].key },
-      { shardIndex: result.recoveryKits[2].shardIndex, key: 'ff'.repeat(32) }, // garbled key
+      { shardIndex: 0, key: prepared.recoveryKits[0].key },
+      { shardIndex: 1, key: prepared.recoveryKits[1].key },
+      { shardIndex: 2, key: 'ff'.repeat(32) }, // wrong key — GCM auth fails
     ];
 
-    const recovery = await svc.recover(TEST_DID, submissions);
-
-    // Should fail — only 2 valid shares out of T=3 required
-    expect(recovery.success).toBe(false);
+    const result = await reconstructSecret(stored, submissions, 3);
+    expect(result.success).toBe(false);
+    expect(result.success === false && result.reason).toMatch(/insufficient/i);
   });
 
-  /**
-   * Bonus: getRecoveryStatus must return only the safe projection
-   * {guardianName, guardianKind, status, shardIndex, threshold} —
-   * no encryptedShard, no plaintext secret, no share material.
-   */
-  it('getRecoveryStatus returns safe projection only — no encryptedShard or secret material', async () => {
-    const fakePrisma = makeFakePrismaForRecovery();
-    const svc = new IdentityService(
-      fakePrisma as any,
-      fakeLedger as any,
-      new CryptoService() as any,
-    );
+  it('detects a tampered ciphertext instead of yielding a wrong secret', async () => {
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+    const stored = prepared.payload.guardians.map((g) => ({
+      shardIndex: g.shardIndex,
+      encryptedShard: g.encryptedShard,
+    }));
 
-    const guardians = [
-      { name: 'Alice', kind: 'friend' },
-      { name: 'Bob', kind: 'colleague' },
-    ];
+    // Flip a byte in one ciphertext.
+    const envelope = JSON.parse(stored[0].encryptedShard);
+    envelope.ciphertext =
+      (envelope.ciphertext[0] === 'a' ? 'b' : 'a') + envelope.ciphertext.slice(1);
+    stored[0].encryptedShard = JSON.stringify(envelope);
 
-    await svc.setupRecovery(TEST_DID, guardians, undefined, 2);
+    const submissions = prepared.recoveryKits
+      .slice(0, 3)
+      .map((k) => ({ shardIndex: k.shardIndex, key: k.key }));
 
+    // GCM rejects the tampered share, leaving only 2 valid — below threshold.
+    const result = await reconstructSecret(stored, submissions, 3);
+    expect(result.success).toBe(false);
+  });
+
+  it('defaults the threshold to a majority', async () => {
+    const prepared = await prepareRecovery(GUARDIANS); // N = 5
+    expect(prepared.payload.threshold).toBe(3);
+  });
+
+  it('rejects nonsensical guardian counts and thresholds', async () => {
+    await expect(prepareRecovery([GUARDIANS[0]])).rejects.toThrow(/2 guardians/);
+    await expect(
+      prepareRecovery(GUARDIANS, { threshold: 1 }),
+    ).rejects.toThrow(/Threshold/);
+    await expect(
+      prepareRecovery(GUARDIANS, { threshold: 6 }),
+    ).rejects.toThrow(/Threshold/);
+  });
+
+  it('commits to the secret with a tag that does not reveal it', async () => {
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+    const secret = new Uint8Array(Buffer.from(prepared.secretHex, 'hex'));
+    expect(prepared.payload.verificationTag).toBe(computeVerificationTag(secret));
+    expect(prepared.payload.verificationTag).not.toContain(prepared.secretHex);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('IdentityService recovery storage', () => {
+  it('stores exactly what the client uploaded — ciphertexts and metadata', async () => {
+    const prisma = makeFakePrisma();
+    const svc = makeService(prisma);
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+
+    const res = await svc.storeRecoverySetup(TEST_DID, prepared.payload);
+
+    expect(res).toEqual({ did: TEST_DID, threshold: 3, guardianCount: 5 });
+    expect(prisma._shards).toHaveLength(5);
+    for (const row of prisma._shards) {
+      expect(isEncryptedShardEnvelope(JSON.parse(row.encryptedShard as string))).toBe(true);
+    }
+  });
+
+  it('never receives or returns anything that reconstructs the secret', async () => {
+    // The property the whole redesign exists for. Serialise everything that
+    // crossed the server boundary and assert the secret and every guardian key
+    // are absent — then confirm the stored ciphertexts really are inert without
+    // those keys.
+    const prisma = makeFakePrisma();
+    const svc = makeService(prisma);
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+
+    const stored = await svc.storeRecoverySetup(TEST_DID, prepared.payload);
+    const shards = await svc.getRecoveryShards(TEST_DID);
     const status = await svc.getRecoveryStatus(TEST_DID);
 
-    expect(Array.isArray(status)).toBe(true);
+    const everythingTheServerTouched = JSON.stringify({
+      uploaded: prepared.payload,
+      rows: prisma._shards,
+      stored,
+      shards,
+      status,
+    });
 
-    for (const shard of status as Array<Record<string, unknown>>) {
-      // Must NOT expose the encrypted blob
-      expect(shard).not.toHaveProperty('encryptedShard');
-
-      // Must contain safe metadata fields
-      expect(shard).toHaveProperty('guardianName');
-      expect(shard).toHaveProperty('guardianKind');
-      expect(shard).toHaveProperty('status');
-      expect(shard).toHaveProperty('shardIndex');
-      expect(shard).toHaveProperty('threshold');
+    expect(everythingTheServerTouched).not.toContain(prepared.secretHex);
+    for (const kit of prepared.recoveryKits) {
+      expect(everythingTheServerTouched).not.toContain(kit.key);
     }
+
+    // And the ciphertexts alone decrypt to nothing without a key.
+    for (const row of prisma._shards) {
+      const envelope = JSON.parse(row.encryptedShard as string);
+      expect(decryptShard(envelope, new Uint8Array(32))).toBeNull();
+    }
+  });
+
+  it('exposes ciphertexts for local reconstruction without guardian names', async () => {
+    const prisma = makeFakePrisma();
+    const svc = makeService(prisma);
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+    await svc.storeRecoverySetup(TEST_DID, prepared.payload);
+
+    const shards = await svc.getRecoveryShards(TEST_DID);
+
+    expect(shards!.threshold).toBe(3);
+    expect(shards!.shards).toHaveLength(5);
+    // This route is public, so third-party personal data must not appear on it.
+    expect(JSON.stringify(shards)).not.toContain('Aria M.');
+    expect(JSON.stringify(shards)).not.toContain('UCSF');
+  });
+
+  it('completes a full round trip through the server', async () => {
+    const prisma = makeFakePrisma();
+    const svc = makeService(prisma);
+    const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+    await svc.storeRecoverySetup(TEST_DID, prepared.payload);
+
+    const fetched = await svc.getRecoveryShards(TEST_DID);
+    const result = await reconstructSecret(
+      fetched!.shards.map((s) => ({
+        shardIndex: s.shardIndex as number,
+        encryptedShard: s.encryptedShard as string,
+      })),
+      prepared.recoveryKits.slice(0, 3).map((k) => ({
+        shardIndex: k.shardIndex,
+        key: k.key,
+      })),
+      fetched!.threshold as number,
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.secretHex).toBe(prepared.secretHex);
+  });
+
+  it('replaces a previous setup rather than accumulating shards', async () => {
+    const prisma = makeFakePrisma();
+    const svc = makeService(prisma);
+
+    await svc.storeRecoverySetup(
+      TEST_DID,
+      (await prepareRecovery(GUARDIANS, { threshold: 3 })).payload,
+    );
+    await svc.storeRecoverySetup(
+      TEST_DID,
+      (await prepareRecovery(GUARDIANS.slice(0, 3), { threshold: 2 })).payload,
+    );
+
+    expect(prisma._shards).toHaveLength(3);
+  });
+
+  describe('upload validation', () => {
+    it('rejects a shard that is not valid JSON', async () => {
+      const prisma = makeFakePrisma();
+      const svc = makeService(prisma);
+      const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+      prepared.payload.guardians[0].encryptedShard = 'not json';
+
+      await expect(
+        svc.storeRecoverySetup(TEST_DID, prepared.payload),
+      ).rejects.toThrow(/malformed/i);
+    });
+
+    it('rejects a shard that is not a v1 AES-256-GCM envelope', async () => {
+      const prisma = makeFakePrisma();
+      const svc = makeService(prisma);
+      const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+      prepared.payload.guardians[1].encryptedShard = JSON.stringify({
+        v: 1,
+        alg: 'rot13',
+        iv: 'zz',
+        authTag: '',
+        ciphertext: '',
+        tag: '',
+      });
+
+      await expect(
+        svc.storeRecoverySetup(TEST_DID, prepared.payload),
+      ).rejects.toThrow(/envelope/i);
+    });
+
+    it('rejects shard indices with gaps or duplicates', async () => {
+      const prisma = makeFakePrisma();
+      const svc = makeService(prisma);
+      const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+      prepared.payload.guardians[2].shardIndex = 0; // duplicate
+
+      await expect(
+        svc.storeRecoverySetup(TEST_DID, prepared.payload),
+      ).rejects.toThrow(/0\.\.N-1/);
+    });
+
+    it('rejects a threshold outside [2, N]', async () => {
+      const prisma = makeFakePrisma();
+      const svc = makeService(prisma);
+      const prepared = await prepareRecovery(GUARDIANS, { threshold: 3 });
+      prepared.payload.threshold = 9;
+
+      await expect(
+        svc.storeRecoverySetup(TEST_DID, prepared.payload),
+      ).rejects.toThrow(/Threshold/);
+    });
+  });
+
+  it('has no server-side reconstruct capability at all', () => {
+    // Removed, not relocated. A reappearing method here would mean the server
+    // can rebuild the secret again.
+    const svc = makeService(makeFakePrisma()) as any;
+    expect(svc.recover).toBeUndefined();
+    expect(svc.reconstructSecret).toBeUndefined();
   });
 });

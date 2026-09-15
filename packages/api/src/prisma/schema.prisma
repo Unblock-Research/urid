@@ -85,7 +85,10 @@ model ZkProof {
   appName        String
   claims         Json
   consentWindow  String
-  proofHash      String
+  // Unique: proofHash is the handle a relying party presents to verify(). Without
+  // this constraint two proofs could share a handle and revoking one left the
+  // other answering for it (critical finding #2).
+  proofHash      String   @unique
   status         String   @default("active")
   createdAt      DateTime @default(now())
   expiresAt      DateTime?
@@ -181,4 +184,21 @@ model LedgerTransaction {
   createdAt DateTime @default(now())
 
   @@index([index])
+}
+
+// DIDSig replay protection (critical finding #1).
+//
+// One row per accepted (did, nonce) pair. The UNIQUE constraint is the whole
+// mechanism: claiming is an INSERT, and a duplicate is a replay. Rows are swept
+// once their expiresAt has passed, since the timestamp check rejects those
+// requests before the nonce is consulted.
+model AuthNonce {
+  id        String   @id @default(uuid())
+  did       String
+  nonce     String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([did, nonce])
+  @@index([expiresAt])
 }

@@ -107,6 +107,26 @@ function hexToFe(hex: string, F: typeof _F): FieldElement {
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
+ * Hash field elements with Poseidon and return the result as a canonical bigint
+ * in [0, p).
+ *
+ * Exposed so claim encoding can build composite leaf values (e.g.
+ * poseidon([nameHash, valueHash])) using the exact same Poseidon instance the
+ * tree and the circom circuit use — a second implementation would silently
+ * disagree on roots.
+ *
+ * @param inputs  1..n BN254 field-range BigInts.
+ * @returns       BigInt in [0, BN254 field prime).
+ */
+export async function poseidonHash(inputs: bigint[]): Promise<bigint> {
+  if (inputs.length === 0) {
+    throw new Error('poseidonHash: inputs must be non-empty');
+  }
+  const { poseidon, F } = await getPoseidon();
+  return F.toObject(poseidon(inputs));
+}
+
+/**
  * Build a binary Poseidon Merkle tree from an array of leaf values.
  *
  * Each leaf is hashed as poseidon([value]).

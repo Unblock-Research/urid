@@ -83,8 +83,15 @@ None yet.
 | Chain | CHN-02: Deploy contracts to testnet | v2 | Roadmap |
 | Impact | IMP-04: OpenAlex + additional enrichment sources | v2 | Roadmap |
 
+## Quick Tasks Completed
+
+| ID | Task | Date | Status |
+|----|------|------|--------|
+| 260915-xbb | Fix 5 critical security findings in packages/api (DID-signature auth, unique proofHash, claim-name binding in circuit, revocation checks, trusted issuer registry) | 2026-09-16 | complete ✓ |
+| 260916-0sl | Fix 3 high-severity findings (real numeric predicate, client-side recovery custody, Groth16 proving off the event loop) | 2026-09-16 | complete ✓ |
+
 ## Session Continuity
 
-Last session: 2026-07-07
-Stopped at: Roadmap and STATE.md created; REQUIREMENTS.md traceability filled; ready to plan Phase 1
-Resume file: None
+Last session: 2026-09-16
+Stopped at: Quick tasks 260915-xbb (5 critical) and 260916-0sl (3 high) complete on branch `fix/critical-security-findings` — 367 tests passing, tsc clean. BREAKING (from 1777cd9): credentials minted before that commit have stale roots and must be re-minted; the later numeric-claim change does NOT add to this. No client signs DIDSig or implements prepareRecovery() — web/mobile still make no API calls. Nothing populates numeric claims yet. Branch is unmerged. Medium findings from the 2026-09-15 analysis remain open.
+Resume file: .planning/quick/260916-0sl-fix-3-high-severity-findings-real-numeri/260916-0sl-SUMMARY.md
