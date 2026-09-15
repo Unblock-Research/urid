@@ -83,8 +83,14 @@ None yet.
 | Chain | CHN-02: Deploy contracts to testnet | v2 | Roadmap |
 | Impact | IMP-04: OpenAlex + additional enrichment sources | v2 | Roadmap |
 
+## Quick Tasks Completed
+
+| ID | Task | Date | Status |
+|----|------|------|--------|
+| 260915-xbb | Fix 5 critical security findings in packages/api (DID-signature auth, unique proofHash, claim-name binding in circuit, revocation checks, trusted issuer registry) | 2026-09-16 | complete ✓ |
+
 ## Session Continuity
 
-Last session: 2026-07-07
-Stopped at: Roadmap and STATE.md created; REQUIREMENTS.md traceability filled; ready to plan Phase 1
-Resume file: None
+Last session: 2026-09-16
+Stopped at: Quick task 260915-xbb complete on branch `fix/critical-security-findings` — all 5 critical findings from the 2026-09-15 code analysis fixed, 327 tests passing. BREAKING: the Merkle leaf encoding changed, so credentials minted before commit 1777cd9 have stale roots and must be re-minted. No client signs DIDSig yet (web/mobile make no API calls). Branch is unmerged.
+Resume file: .planning/quick/260915-xbb-fix-5-critical-security-findings-in-pack/260915-xbb-SUMMARY.md
