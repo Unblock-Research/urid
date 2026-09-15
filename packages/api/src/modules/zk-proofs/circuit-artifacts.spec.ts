@@ -138,6 +138,10 @@ describe('ZKP-06: end-to-end Groth16 fullProve → verify round-trip', () => {
       const witness = {
         // Private signals
         claimValueHash: claimValueHash(claims[0].value).toString(10),
+        // Required since the predicate became numeric. claims[0] is a string
+        // claim proven with predicateEnabled=0, so the circuit multiplies the
+        // numeric binding constraint out and this filler is never consulted.
+        numericValue:   '0',
         pathElements:   inclusionProof.siblings.map(hexToDecStr),
         pathIndices:    inclusionProof.pathBits.map(b => b.toString()),
         // Public signals (also provided as inputs so fullProve can compute output)

@@ -63,6 +63,12 @@ export class CredentialsService {
     issuer: string;
     tone?: string;
     fieldOfStudy?: string;
+    /**
+     * Optional numeric claims. Omitting them yields a claim set byte-identical
+     * to the string-only encoding, so roots of existing-shaped credentials are
+     * unaffected.
+     */
+    numericClaims?: Record<string, number>;
   }) {
     const researcher = await this.prisma.researcher.findUnique({
       where: { did: data.researcherDid },
@@ -94,6 +100,7 @@ export class CredentialsService {
       issuer: data.issuer,
       fieldOfStudy: data.fieldOfStudy ?? null,
       issuedAt,
+      numericClaims: data.numericClaims ?? null,
     });
 
     // Step 3 — compute Poseidon-Merkle root over the encoded claim leaves

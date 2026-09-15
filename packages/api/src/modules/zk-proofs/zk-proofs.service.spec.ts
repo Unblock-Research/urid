@@ -48,6 +48,8 @@ const IDX_CLAIM_NAME_HASH = 1;
 const IDX_ROOT = 2;
 
 const CREDENTIAL_ID = 'test-credential-id-zkp-001';
+const NUMERIC_CREDENTIAL_ID = 'test-credential-id-zkp-numeric';
+const CITATION_COUNT = 2841;
 const RESEARCHER_ID = 'test-researcher-id-zkp-001';
 const TREE_SIZE = 16;
 
@@ -55,6 +57,7 @@ const TREE_SIZE = 16;
 
 let service: ZkProofsService;
 let mockSbt: Record<string, unknown>;
+let numericSbt: Record<string, unknown>;
 let lastCreatedProof: Record<string, unknown> | null = null;
 let proveResult: Record<string, unknown>;
 
@@ -122,8 +125,36 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
         issuerPublicKey: bytesToHex(keypair.publicKey),
       };
 
+      // ── Step 1b: A second credential carrying a numeric claim ─────────────
+      const numericClaims = buildClaimSet({
+        credentialType: 'ImpactRecord',
+        holderDid: 'did:test:holder-zkp',
+        issuedAt: '2025-01-01T00:00:00.000Z',
+        issuer: 'did:test:issuer-zkp',
+        numericClaims: { citationCount: CITATION_COUNT },
+      });
+      const numericLeaves = await encodeClaimsToLeaves(numericClaims);
+      const numericPadded: bigint[] = [...numericLeaves];
+      while (numericPadded.length < TREE_SIZE) numericPadded.push(0n);
+      const numericTree = await buildMerkleTree(numericPadded);
+      const numericSig = await cryptoSetup.sign(
+        rootMessageBytes(numericTree.root),
+        keypair.privateKey,
+      );
+      numericSbt = {
+        id: NUMERIC_CREDENTIAL_ID,
+        researcherId: RESEARCHER_ID,
+        claims: numericClaims,
+        merkleRoot: numericTree.root,
+        issuerSignature: bytesToHex(numericSig),
+        issuerPublicKey: bytesToHex(keypair.publicKey),
+      };
+
       // ── Step 2: Wire mock Prisma ──────────────────────────────────────────
-      mockPrisma.soulboundToken.findUnique.mockResolvedValue(mockSbt);
+      mockPrisma.soulboundToken.findUnique.mockImplementation(
+        async ({ where }: any) =>
+          where.id === NUMERIC_CREDENTIAL_ID ? numericSbt : mockSbt,
+      );
 
       mockPrisma.zkProof.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
         const row = { id: 'zkproof-test-001', status: 'active', expiresAt: null, ...data };
@@ -433,6 +464,126 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
     } finally {
       mockSbt.revoked = wasRevoked;
     }
+  }, 30_000);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // High finding #1: the threshold predicate must mean something
+  //
+  // It previously compared claimValueHash — a ~2^254 SHA-256 element — against
+  // the threshold, while GreaterEqThan(64) requires inputs below 2^64. Enabling
+  // it on any real claim failed witness generation, and verify() never checked
+  // the threshold signals against the request, so a vacuous pass and a proven
+  // bound were indistinguishable.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('finding #1: proves a numeric claim meets a threshold it clears', async () => {
+    const res = (await service.prove(
+      {
+        credentialId: NUMERIC_CREDENTIAL_ID,
+        disclosedClaimName: 'citationCount',
+        appName: 'test-app-zkp',
+        consentWindow: 'forever',
+        threshold: '1000',
+        predicateEnabled: true,
+      },
+      RESEARCHER_ID,
+    )) as Record<string, unknown>;
+
+    const verdict = await service.verify(res.proofHash as string);
+    expect(verdict.valid).toBe(true);
+    expect(verdict.predicate).toEqual({ enabled: true, threshold: '1000' });
+
+    lastCreatedProof = proveResult as Record<string, unknown>;
+  }, 120_000);
+
+  it('finding #1: cannot prove a threshold the value does not clear', async () => {
+    // 2841 >= 5000 is false, so the circuit's predicateResult is 0 and verify()
+    // refuses the proof. The prover cannot talk their way past the comparator.
+    const res = (await service.prove(
+      {
+        credentialId: NUMERIC_CREDENTIAL_ID,
+        disclosedClaimName: 'citationCount',
+        appName: 'test-app-zkp',
+        consentWindow: 'forever',
+        threshold: '5000',
+        predicateEnabled: true,
+      },
+      RESEARCHER_ID,
+    )) as Record<string, unknown>;
+
+    const verdict = await service.verify(res.proofHash as string);
+    expect(verdict.valid).toBe(false);
+    expect(verdict.reason).toMatch(/predicate not satisfied/i);
+
+    lastCreatedProof = proveResult as Record<string, unknown>;
+  }, 120_000);
+
+  it('finding #1: the numeric value is bound to the credential, not chosen by the prover', async () => {
+    // The circuit recomputes poseidon([NUMERIC_VALUE_TAG, numericValue]) and
+    // constrains it to the committed value half, so a substituted number cannot
+    // produce a satisfiable witness at all.
+    const tampered = { ...(numericSbt as any) };
+    tampered.claims = (numericSbt.claims as any[]).map((c) =>
+      c.name === 'citationCount' ? { ...c, value: '999999' } : c,
+    );
+    mockPrisma.soulboundToken.findUnique.mockResolvedValueOnce(tampered);
+
+    // The inflated value changes the leaf, so the recomputed tree no longer
+    // matches the stored root — rejected before proving even begins.
+    await expect(
+      service.prove(
+        {
+          credentialId: NUMERIC_CREDENTIAL_ID,
+          disclosedClaimName: 'citationCount',
+          appName: 'test-app-zkp',
+          consentWindow: 'forever',
+          threshold: '900000',
+          predicateEnabled: true,
+        },
+        RESEARCHER_ID,
+      ),
+    ).rejects.toThrow(/root mismatch/i);
+  }, 60_000);
+
+  it('finding #1: refuses the predicate on a string claim instead of emitting an unusable proof', async () => {
+    await expect(
+      service.prove(
+        {
+          credentialId: CREDENTIAL_ID,
+          disclosedClaimName: 'fieldOfStudy',
+          appName: 'test-app-zkp',
+          consentWindow: 'forever',
+          threshold: '10',
+          predicateEnabled: true,
+        },
+        RESEARCHER_ID,
+      ),
+    ).rejects.toThrow(/not numeric/i);
+  }, 60_000);
+
+  it('finding #1: verify() reports a vacuous predicate rather than implying a bound', async () => {
+    // proveResult was generated with predicateEnabled=false, so predicateResult
+    // is 1 for free. A relying party must be able to see that.
+    const verdict = await service.verify(proveResult.proofHash as string);
+    expect(verdict.valid).toBe(true);
+    expect(verdict.predicate).toEqual({ enabled: false, threshold: '0' });
+  }, 30_000);
+
+  it('finding #1: verify() rejects a proof whose threshold signal was relabelled', async () => {
+    // Claiming a higher bound than was actually proven.
+    mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
+      ...(lastCreatedProof as Record<string, unknown>),
+      disclosedClaims: {
+        ...((lastCreatedProof as Record<string, unknown>)
+          .disclosedClaims as Record<string, unknown>),
+        predicateEnabled: true,
+        threshold: '100000',
+      },
+    });
+
+    const verdict = await service.verify(proveResult.proofHash as string);
+    expect(verdict.valid).toBe(false);
+    expect(verdict.reason).toMatch(/predicate flag|threshold/i);
   }, 30_000);
 
   // ─────────────────────────────────────────────────────────────────────────

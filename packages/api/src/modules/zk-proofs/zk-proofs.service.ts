@@ -29,8 +29,9 @@ import * as path from "path";
 import * as fs from "fs";
 import {
   claimNameHash,
-  claimValueHash,
+  claimValueCommitment,
   encodeClaimsToLeaves,
+  isNumericClaim,
   rootMessageBytes,
   type Claim,
 } from "../../crypto/claim-encoding";
@@ -50,6 +51,8 @@ const TREE_SIZE = Math.pow(2, CIRCUIT_DEPTH); // 16 — must match MerkleInclusi
 const IDX_PREDICATE_RESULT = 0;
 const IDX_CLAIM_NAME_HASH = 1;
 const IDX_ROOT = 2;
+const IDX_THRESHOLD = 3;
+const IDX_PREDICATE_ENABLED = 4;
 
 @Injectable()
 export class ZkProofsService {
@@ -157,6 +160,17 @@ export class ZkProofsService {
       );
     }
 
+    // 6a. The threshold predicate only means something for a numeric claim, whose
+    //     value is committed as poseidon([NUMERIC_VALUE_TAG, n]) and can therefore
+    //     be re-derived and bound inside the circuit. Asking for it on a string
+    //     claim would produce an unsatisfiable witness, so reject it here with an
+    //     explanation rather than surfacing a witness-generation failure.
+    if (data.predicateEnabled && !isNumericClaim(storedClaims[disclosedIndex])) {
+      throw new Error(
+        `Claim "${data.disclosedClaimName}" is not numeric — the threshold predicate applies only to numeric claims`,
+      );
+    }
+
     // 7. Generate Merkle inclusion proof for the disclosed leaf
     const inclusionProof = this.crypto.generateInclusionProof(
       tree,
@@ -168,9 +182,15 @@ export class ZkProofsService {
     //    The circuit rebuilds leafValue = poseidon([claimNameHash, claimValueHash])
     //    internally, so we supply the two halves rather than the combined leaf.
     const disclosedClaim = storedClaims[disclosedIndex];
+    // numericValue is only consulted when predicateEnabled=1; for string claims
+    // the circuit's binding constraint is multiplied out, so 0 is a safe filler.
+    const numericValue = isNumericClaim(disclosedClaim)
+      ? BigInt(disclosedClaim.value)
+      : 0n;
     const witness = {
       // Private signals — the value half never leaves this process
-      claimValueHash: claimValueHash(disclosedClaim.value).toString(10),
+      claimValueHash: (await claimValueCommitment(disclosedClaim)).toString(10),
+      numericValue: numericValue.toString(10),
       pathElements: inclusionProof.siblings.map((s) =>
         BigInt("0x" + s).toString(10),
       ),
@@ -253,6 +273,7 @@ export class ZkProofsService {
           claimName: data.disclosedClaimName,
           threshold: data.threshold ?? "0",
           predicateEnabled: !!data.predicateEnabled,
+          numericClaim: isNumericClaim(disclosedClaim),
         } as unknown as object,
         verified: true,
       },
@@ -289,7 +310,17 @@ export class ZkProofsService {
    *
    * Never throws; every failure path returns { valid: false, reason }.
    */
-  async verify(proofHash: string): Promise<{ valid: boolean; reason?: string }> {
+  async verify(proofHash: string): Promise<{
+    valid: boolean;
+    reason?: string;
+    /**
+     * Whether the numeric threshold predicate was actually engaged, and against
+     * what bound. A relying party must be able to tell "value >= 100 was proven"
+     * from "membership was proven and the predicate passed vacuously" — those
+     * produce the identical predicateResult of 1.
+     */
+    predicate?: { enabled: boolean; threshold: string };
+  }> {
     // Resolve the proof handle to exactly one row.
     //
     // findUnique (backed by the @unique constraint on proofHash) replaces the
@@ -406,7 +437,43 @@ export class ZkProofsService {
       return { valid: false, reason: "Predicate not satisfied" };
     }
 
-    return { valid: true };
+    // 7. Bind the predicate to the request it was generated for.
+    //
+    //    threshold and predicateEnabled are prover-chosen inputs, so without this
+    //    a proof generated with the predicate switched OFF is indistinguishable
+    //    from one that actually cleared a bound — predicateResult is 1 either way.
+    //    Requiring the public signals to match the stored request means the
+    //    recorded threshold is the threshold that was proven.
+    const storedPredicateEnabled =
+      (proofRow.disclosedClaims as { predicateEnabled?: boolean } | null)
+        ?.predicateEnabled === true;
+    const storedThreshold =
+      (proofRow.disclosedClaims as { threshold?: string } | null)?.threshold ??
+      "0";
+
+    const signalPredicateEnabled = publicSignals[IDX_PREDICATE_ENABLED] === "1";
+    if (signalPredicateEnabled !== storedPredicateEnabled) {
+      return {
+        valid: false,
+        reason: "Proof predicate flag does not match the recorded request",
+      };
+    }
+    if (publicSignals[IDX_THRESHOLD] !== String(storedThreshold)) {
+      return {
+        valid: false,
+        reason: "Proof threshold does not match the recorded request",
+      };
+    }
+
+    return {
+      valid: true,
+      // Reported unconditionally so a caller cannot mistake a vacuous pass for a
+      // proven bound by omission.
+      predicate: {
+        enabled: signalPredicateEnabled,
+        threshold: signalPredicateEnabled ? String(storedThreshold) : "0",
+      },
+    };
   }
 
   // ── Supporting endpoints (unchanged logic) ────────────────────────────────

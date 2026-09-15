@@ -6,7 +6,7 @@ include "mux1.circom";
 include "comparators.circom";
 
 /*
- * MerkleInclusionProof(depth)
+ * MerkleInclusionProof(depth, numericTag)
  *
  * Proves Poseidon-Merkle membership of a NAMED claim, matching claim-encoding.ts
  * and merkle.ts:
@@ -36,14 +36,21 @@ include "comparators.circom";
  *   [3] threshold        (input)  -- lower bound for optional predicate; 0 = disabled
  *   [4] predicateEnabled (input)  -- 1 to activate GreaterEqThan check; 0 = skip
  *
+ * Template parameter:
+ *   numericTag -- the NUMERIC_VALUE_TAG constant from claim-encoding.ts, baked in
+ *                 as a compile-time literal so JS and circom cannot disagree on
+ *                 the numeric-commitment domain. Regenerate both together.
+ *
  * Private signals (zero-knowledge):
- *   claimValueHash       -- hash of the claim's value (claim-encoding.ts)
+ *   claimValueHash       -- commitment to the claim's value (claim-encoding.ts)
+ *   numericValue         -- the claim's numeric value, when the predicate is used
  *   pathElements[depth]  -- sibling hashes (merkle.ts: proof.siblings[])
  *   pathIndices[depth]   -- direction bits (merkle.ts: proof.pathBits[])
  */
-template MerkleInclusionProof(depth) {
+template MerkleInclusionProof(depth, numericTag) {
     // -- private ----------------------------------------------------------
     signal input claimValueHash;
+    signal input numericValue;          // meaningful only when predicateEnabled=1
     signal input pathElements[depth];
     signal input pathIndices[depth];    // 0=left, 1=right  (same as merkle.ts pathBits)
 
@@ -105,29 +112,44 @@ template MerkleInclusionProof(depth) {
     // -- Step 4: Root constraint ------------------------------------------
     currentHash[depth] === root;
 
-    // -- Step 5: Optional predicate -- claimValueHash >= threshold ---------
+    // -- Step 5: Optional predicate -- numericValue >= threshold -----------
     //
-    // UNCHANGED SEMANTICS. This predicate compares a SHA-256-derived hash to a
-    // threshold, which is not a meaningful numeric statement about the claim's
-    // value; it is carried forward as-is so this change stays scoped to claim
-    // binding. Treat it as advisory until a real numeric-claim encoding exists.
+    // WHAT CHANGED AND WHY:
+    //   This previously compared claimValueHash (a SHA-256-derived element of
+    //   size ~2^254) against the threshold. That was never a usable statement:
+    //   GreaterEqThan(64) requires both inputs below 2^64, so enabling the
+    //   predicate on any real claim failed witness generation, and had it
+    //   succeeded it would have compared a hash, not a value.
     //
-    // GreaterEqThan(64) internally calls Num2Bits(65), which requires BOTH
-    // inputs to be < 2^64.  SHA-256-derived values (up to ~2^254) would cause
-    // Num2Bits(65) to fail even when predicateEnabled=0, because circom
-    // evaluates ALL constraints unconditionally.
+    //   A numeric claim commits its value as
+    //       claimValueHash = poseidon([numericTag, numericValue])
+    //   which the circuit CAN recompute (Poseidon is cheap here; SHA-256 is not).
+    //   Constraining that recomputation to equal the claimValueHash that feeds
+    //   the leaf is what binds the comparison to the credential: a prover cannot
+    //   supply some other numericValue without breaking Merkle membership.
     //
-    // Fix: clamp both comparator inputs to 0 when predicateEnabled=0 by
-    // multiplying by predicateEnabled.  predicateEnabled is binary (enforced
-    // above), so this product is a valid quadratic constraint.
-    //   predicateEnabled=0 -> geq inputs are (0, 0) -> geq.out=1 (0>=0) -> result=1
-    //   predicateEnabled=1 -> geq inputs are (claimValueHash, threshold)
-    //     value < 2^64:  works correctly as a numeric predicate
-    //     value >= 2^64: Num2Bits rejects (soundness -- large SHA-256
-    //       values must not enable the numeric predicate)
+    // The binding is enforced only when the predicate is switched on. String
+    // claims commit their value with SHA-256, so for them this equality cannot
+    // hold and multiplying by predicateEnabled is what lets them prove
+    // membership without engaging the numeric path at all.
+    component numericHasher = Poseidon(2);
+    numericHasher.inputs[0] <== numericTag;
+    numericHasher.inputs[1] <== numericValue;
+
+    // predicateEnabled=1 -> numericHasher.out must equal claimValueHash
+    // predicateEnabled=0 -> constraint is vacuous
+    (numericHasher.out - claimValueHash) * predicateEnabled === 0;
+
+    // Clamp both comparator inputs to 0 when the predicate is disabled, so
+    // Num2Bits(65) never sees an out-of-range value. circom evaluates every
+    // constraint unconditionally, so without this a disabled predicate would
+    // still be constrained by the comparator.
+    //   predicateEnabled=0 -> geq inputs are (0, 0) -> geq.out=1 -> result=1
+    //   predicateEnabled=1 -> geq inputs are (numericValue, threshold), both of
+    //     which must be < 2^64; claim-encoding.ts enforces that bound at mint.
     signal clampedValue;
     signal clampedThreshold;
-    clampedValue     <== predicateEnabled * claimValueHash;
+    clampedValue     <== predicateEnabled * numericValue;
     clampedThreshold <== predicateEnabled * threshold;
 
     component geq = GreaterEqThan(64);
@@ -140,4 +162,8 @@ template MerkleInclusionProof(depth) {
     predicateResult <== predicateEnabled * (geq.out - 1) + 1;
 }
 
-component main {public [claimNameHash, root, threshold, predicateEnabled]} = MerkleInclusionProof(4);
+// numericTag must equal NUMERIC_VALUE_TAG in src/crypto/claim-encoding.ts.
+// claim-encoding.spec.ts asserts the two match, so a change on either side that
+// is not mirrored fails the suite rather than silently breaking every proof.
+component main {public [claimNameHash, root, threshold, predicateEnabled]} =
+    MerkleInclusionProof(4, 9875350050016818564111178388263033158520350153331699653473683684489562362709);

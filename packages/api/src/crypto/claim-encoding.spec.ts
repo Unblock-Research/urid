@@ -15,20 +15,40 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+
 import {
   BN254_FIELD_PRIME,
+  MAX_NUMERIC_CLAIM_VALUE,
+  NUMERIC_VALUE_TAG,
   buildClaimSet,
   claimNameHash,
   claimToLeafValue,
+  claimValueCommitment,
   claimValueHash,
   encodeClaimsToLeaves,
+  isNumericClaim,
+  numericValueHash,
   rootMessageBytes,
   type Claim,
   type ClaimSetInput,
 } from './claim-encoding';
+import { poseidonHash } from './merkle';
 import { buildMerkleTree } from './merkle';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
+
+/**
+ * Merkle root of FULL_INPUT under the string-only encoding, captured by running
+ * the encoder from the commit BEFORE numeric claims existed (1777cd9).
+ *
+ * This is the regression guard for "existing credentials need no re-mint": if
+ * adding numeric-claim support perturbs the string path at all, this value moves
+ * and every already-minted credential stops verifying.
+ */
+const PINNED_STRING_ONLY_ROOT =
+  '278597314367360c9888a76836b90aa1898fd37ede57db583bd99f145f38d08e';
 
 const FULL_INPUT: ClaimSetInput = {
   holderDid: 'did:ub:z6Mkabcdef',
@@ -255,5 +275,115 @@ describe('rootMessageBytes', () => {
     const b1 = rootMessageBytes('root1');
     const b2 = rootMessageBytes('root2');
     expect(b1).not.toEqual(b2);
+  });
+});
+
+// ── Numeric claims (high finding #1) ─────────────────────────────────────────
+
+describe('numeric claims', () => {
+  it('omitting numericClaims yields a claim set identical to the string-only encoding', () => {
+    // The property that means existing credentials need no re-mint.
+    const without = buildClaimSet(FULL_INPUT);
+    const withEmpty = buildClaimSet({ ...FULL_INPUT, numericClaims: {} });
+    const withNull = buildClaimSet({ ...FULL_INPUT, numericClaims: null });
+
+    expect(withEmpty).toEqual(without);
+    expect(withNull).toEqual(without);
+    // Serialised shape matters, not just deep equality: a stray `kind` key would
+    // change the stored JSON even where the leaf value did not.
+    expect(JSON.stringify(withEmpty)).toBe(JSON.stringify(without));
+    for (const c of without) {
+      expect(Object.keys(c).sort()).toEqual(['name', 'value']);
+    }
+  });
+
+  it('string-only Merkle roots are unchanged by the numeric-claim feature', async () => {
+    const claims = buildClaimSet(FULL_INPUT);
+    const leaves = await encodeClaimsToLeaves(claims);
+    const padded = [...leaves];
+    while (padded.length < 16) padded.push(0n);
+    const { root } = await buildMerkleTree(padded);
+
+    // Pinned value captured from the encoding before numeric claims existed.
+    // If this changes, every already-minted credential silently stops verifying.
+    expect(root).toBe(PINNED_STRING_ONLY_ROOT);
+  });
+
+  it('appends numeric claims after the string fields, sorted by name', () => {
+    const claims = buildClaimSet({
+      ...FULL_INPUT,
+      numericClaims: { publicationCount: 34, citationCount: 2841 },
+    });
+    const names = claims.map((c) => c.name);
+    expect(names.slice(-2)).toEqual(['citationCount', 'publicationCount']);
+    expect(claims.filter((c) => c.kind === 'numeric')).toHaveLength(2);
+  });
+
+  it('is insensitive to numericClaims key-insertion order', () => {
+    const a = buildClaimSet({ ...FULL_INPUT, numericClaims: { b: 2, a: 1 } });
+    const b = buildClaimSet({ ...FULL_INPUT, numericClaims: { a: 1, b: 2 } });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it('accepts numbers, bigints, and decimal strings identically', () => {
+    const asNum = buildClaimSet({ ...FULL_INPUT, numericClaims: { n: 42 } });
+    const asBig = buildClaimSet({ ...FULL_INPUT, numericClaims: { n: 42n } });
+    const asStr = buildClaimSet({ ...FULL_INPUT, numericClaims: { n: '42' } });
+    expect(JSON.stringify(asNum)).toBe(JSON.stringify(asBig));
+    expect(JSON.stringify(asNum)).toBe(JSON.stringify(asStr));
+  });
+
+  describe('bounds', () => {
+    it('rejects values at or above 2^64 — the comparator cannot accept them', () => {
+      expect(() =>
+        buildClaimSet({ ...FULL_INPUT, numericClaims: { n: MAX_NUMERIC_CLAIM_VALUE } }),
+      ).toThrow(/2\^64/);
+    });
+
+    it('accepts the largest in-range value', () => {
+      const claims = buildClaimSet({
+        ...FULL_INPUT,
+        numericClaims: { n: MAX_NUMERIC_CLAIM_VALUE - 1n },
+      });
+      expect(claims.at(-1)!.value).toBe((MAX_NUMERIC_CLAIM_VALUE - 1n).toString(10));
+    });
+
+    it('rejects negatives and non-integers', () => {
+      expect(() => buildClaimSet({ ...FULL_INPUT, numericClaims: { n: -1 } })).toThrow();
+      expect(() => buildClaimSet({ ...FULL_INPUT, numericClaims: { n: 1.5 } })).toThrow(/integer/i);
+      expect(() => buildClaimSet({ ...FULL_INPUT, numericClaims: { n: 'abc' } })).toThrow();
+    });
+  });
+
+  describe('commitment', () => {
+    it('commits a numeric value with Poseidon, not SHA-256', async () => {
+      const claim: Claim = { name: 'citationCount', value: '2841', kind: 'numeric' };
+      expect(await claimValueCommitment(claim)).toBe(
+        await poseidonHash([NUMERIC_VALUE_TAG, 2841n]),
+      );
+      // Distinct from the string rule, so the two kinds cannot be conflated.
+      expect(await claimValueCommitment(claim)).not.toBe(claimValueHash('2841'));
+    });
+
+    it('still uses SHA-256 for string claims', async () => {
+      const claim: Claim = { name: 'title', value: 'BSc' };
+      expect(await claimValueCommitment(claim)).toBe(claimValueHash('BSc'));
+      expect(isNumericClaim(claim)).toBe(false);
+    });
+
+    it('is collision-distinct across numeric values', async () => {
+      expect(await numericValueHash(1n)).not.toBe(await numericValueHash(2n));
+    });
+  });
+
+  it('the circuit bakes in the same NUMERIC_VALUE_TAG this module uses', () => {
+    // The tag is a compile-time literal in the .circom source. If the two drift,
+    // every numeric predicate proof fails at witness generation with no obvious
+    // cause — so pin them against each other here.
+    const circuitSrc = fs.readFileSync(
+      path.resolve(__dirname, '../../circuits/merkle_inclusion.circom'),
+      'utf8',
+    );
+    expect(circuitSrc).toContain(NUMERIC_VALUE_TAG.toString(10));
   });
 });

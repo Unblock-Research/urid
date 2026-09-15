@@ -38,8 +38,40 @@ This keeps the circom witness structure simple and matches circomlib's standard
 leafHash  = poseidon([leafValue])
 leafValue = poseidon([claimNameHash, claimValueHash])        <- v2
 claimNameHash  = sha256("urid:claim-name:"  + name)  mod p
-claimValueHash = sha256("urid:claim-value:" + value) mod p
+
+claimValueHash, by claim kind:
+  string  (default) = sha256("urid:claim-value:" + value) mod p
+  numeric           = poseidon([NUMERIC_VALUE_TAG, value])  <- v2.1
 ```
+
+### Numeric claims (v2.1 — additive, NOT breaking)
+
+A numeric claim commits its value with Poseidon rather than SHA-256 so the
+circuit can recompute the commitment from the private numeric value and
+constrain it against the leaf:
+
+```
+(poseidon([NUMERIC_VALUE_TAG, n]) - claimValueHash) * predicateEnabled === 0
+```
+
+That constraint is what makes `n >= threshold` a statement about the credential:
+a prover who substitutes a different `n` breaks Merkle membership.
+
+SHA-256 cannot serve here — recomputing it in-circuit costs tens of thousands of
+constraints, and its output (~2^254) exceeds what `GreaterEqThan(64)` accepts.
+
+Numeric values are bounded to `[0, 2^64)`, enforced at mint by
+`claim-encoding.ts`, because `GreaterEqThan(64)` uses `Num2Bits(65)` internally.
+
+`NUMERIC_VALUE_TAG` is baked into `merkle_inclusion.circom` as a compile-time
+literal and cross-checked against `claim-encoding.ts` by the test suite, so the
+two cannot drift apart silently.
+
+**Not breaking:** string claims are encoded exactly as before, and a claim set
+with no numeric claims serialises byte-identically (no `kind` key is emitted).
+`claim-encoding.spec.ts` pins the string-only root of a reference credential
+against the value produced by the pre-v2.1 encoder, so any perturbation of the
+string path fails the suite. Credentials minted under v2 need no re-mint.
 
 - `leafValue` must be a BigInt in the range `[0, p)` (any BN254 field element).
 - The single-element poseidon call corresponds to `poseidon(1)` in circom
@@ -173,13 +205,17 @@ root.padStart(64, '0')
    binding the *public* claim name to the *private* claim value (v2).
 2. Merkle membership: the leaf built from those two halves is in the committed
    Merkle tree (i.e. there exists a valid inclusion proof).
-3. A numeric predicate over `claimValueHash`.
+3. A numeric predicate `numericValue >= threshold` over a value that is bound to
+   the credential by the Poseidon commitment described in section 3.
 
-   ⚠ The predicate compares a SHA-256-derived hash against a threshold, which is
-   not a meaningful numeric statement about the claim's value. It is carried
-   forward unchanged from v1 and should be treated as **advisory** until a real
-   numeric-claim encoding exists. `verify()` also does not bind the stored
-   threshold to `publicSignals[3]`.
+   The predicate applies only to numeric claims. `prove()` rejects a request to
+   enable it on a string claim rather than emitting a proof that cannot verify.
+
+   `verify()` requires `publicSignals[3]` and `publicSignals[4]` to match the
+   threshold and flag recorded on the proof row, and reports `predicate:
+   { enabled, threshold }` in its result. Without that, a proof generated with
+   the predicate switched off is indistinguishable from one that cleared a real
+   bound — `predicateResult` is 1 in both cases.
 
 **Public signals, in witness order:**
 
