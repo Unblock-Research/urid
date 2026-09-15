@@ -7,11 +7,9 @@ import {
   registerBodySchema,
   updateBodySchema,
   setupRecoveryBodySchema,
-  reconstructBodySchema,
   RegisterBody,
   UpdateBody,
   SetupRecoveryBody,
-  ReconstructBody,
 } from "./identity.dto";
 
 @ApiTags("Identity")
@@ -59,12 +57,13 @@ export class IdentityController {
   /**
    * POST identity/did/:did/recovery
    *
-   * Set up T-of-N Shamir social recovery for a researcher.
-   * Body: { guardians: { name, kind }[], secret?: string, threshold?: number }
+   * Store a recovery setup the holder prepared locally. The body carries
+   * ciphertexts only — the server never receives the secret, a plaintext share,
+   * or a guardian key.
    *
-   * Returns per-guardian recovery kits (AES key + shardIndex) and a
-   * verification tag.  Recovery kits must be delivered to guardians
-   * out-of-band — they are shown only once.
+   * HOLDER-authenticated: you still control your key when setting recovery up.
+   * Guardian keys are returned to the holder by `prepareRecovery()` on their own
+   * device and must be delivered out-of-band.
    */
   @UseGuards(DidAuthGuard)
   @ApiSecurity("DIDSig")
@@ -74,15 +73,14 @@ export class IdentityController {
     @Body(new ZodValidationPipe(setupRecoveryBodySchema))
     body: SetupRecoveryBody,
   ) {
-    return this.svc.setupRecovery(did, body.guardians, body.secret, body.threshold);
+    return this.svc.storeRecoverySetup(did, body);
   }
 
   /**
    * GET identity/did/:did/recovery
    *
-   * Returns the recovery status for a researcher — safe projection only
-   * (guardianName, guardianKind, status, shardIndex, threshold).
-   * Never returns encryptedShard or any plaintext material.
+   * Recovery status for the holder — safe metadata only (guardian name, kind,
+   * status, shardIndex, threshold). Never returns ciphertext or key material.
    */
   @UseGuards(DidAuthGuard)
   @ApiSecurity("DIDSig")
@@ -92,23 +90,22 @@ export class IdentityController {
   }
 
   /**
-   * POST identity/did/:did/recovery/reconstruct
+   * GET identity/did/:did/recovery/shards
    *
-   * Reconstruct the recovery secret from >=T guardian submissions.
-   * Body: { submissions: { shardIndex: number; key: string }[] }
+   * The stored ciphertexts, for the holder to reconstruct locally with
+   * `reconstructSecret()` from crypto/recovery.ts.
    *
-   * Each submission provides the guardian's shardIndex and the AES key
-   * they were given at setup.  Returns success + secret when >=T shares
-   * are valid; returns failure (no secret bytes) when fewer are valid or
-   * a key is wrong/garbled.
+   * PUBLIC by necessity and by design. Recovery exists because the holder has
+   * LOST their key, so requiring a DIDSig signature here would make the endpoint
+   * useless for its only purpose — an earlier revision of this work did exactly
+   * that. Authorisation instead comes from possessing `threshold` guardian keys,
+   * without which these ciphertexts reveal nothing.
+   *
+   * There is deliberately no server-side reconstruct endpoint: the capability
+   * was removed, not relocated.
    */
-  @UseGuards(DidAuthGuard)
-  @ApiSecurity("DIDSig")
-  @Post("did/:did/recovery/reconstruct")
-  reconstruct(
-    @Param("did") did: string,
-    @Body(new ZodValidationPipe(reconstructBodySchema)) body: ReconstructBody,
-  ) {
-    return this.svc.recover(did, body.submissions);
+  @Get("did/:did/recovery/shards")
+  getRecoveryShards(@Param("did") did: string) {
+    return this.svc.getRecoveryShards(did);
   }
 }

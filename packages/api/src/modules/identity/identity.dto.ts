@@ -2,9 +2,12 @@
  * Zod DTO schemas for the identity controller's write endpoints.
  *
  * Threat register coverage:
- *   T-08-03: rejects malformed register/update/setupRecovery/reconstruct bodies with 400
- *   T-08-04: reconstructBodySchema enforces shardIndex int + key string so malformed
- *            guardian payloads cannot reach the Shamir reconstruct path
+ *   T-08-03: rejects malformed register/update/setupRecovery bodies with 400
+ *   T-08-04: setupRecoveryBodySchema constrains guardian shard payloads before
+ *            they reach persistence
+ *
+ * The reconstruct schema is gone: reconstruction now happens on the holder's
+ * device, so the server has no endpoint to validate (high finding #2).
  */
 
 import { z } from 'zod';
@@ -25,30 +28,33 @@ export const updateBodySchema = z.object({
   affiliations: z.array(z.string()).optional(),
 });
 
-/** POST /identity/did/:did/recovery */
+/**
+ * POST /identity/did/:did/recovery
+ *
+ * Accepts a setup the HOLDER prepared locally with crypto/recovery.ts
+ * `prepareRecovery()`. Note what is absent: no `secret` field. The server has no
+ * use for one, and accepting it would reintroduce exactly the custodial exposure
+ * this flow removes (high finding #2).
+ */
 export const setupRecoveryBodySchema = z.object({
+  threshold: z.number().int().min(2),
+  /** sha256(secret) hex — a non-secret commitment used to check reconstruction. */
+  verificationTag: z.string().regex(/^[0-9a-f]{64}$/, 'verificationTag must be 64 hex chars'),
   guardians: z
     .array(
       z.object({
         name: z.string().min(1),
         kind: z.string().min(1),
+        shardIndex: z.number().int().min(0),
+        /**
+         * JSON-serialised EncryptedShardEnvelope. Bounded so an oversized blob
+         * cannot be used to bloat the table; a v1 envelope for a 32-byte secret
+         * is a few hundred bytes.
+         */
+        encryptedShard: z.string().min(1).max(8192),
       }),
     )
     .min(2),
-  secret: z.string().optional(),
-  threshold: z.number().int().optional(),
-});
-
-/** POST /identity/did/:did/recovery/reconstruct */
-export const reconstructBodySchema = z.object({
-  submissions: z
-    .array(
-      z.object({
-        shardIndex: z.number().int(),
-        key: z.string().min(1),
-      }),
-    )
-    .min(1),
 });
 
 // Explicit TypeScript types (not z.infer) to avoid TS5.x + Zod 3.25 addQuestionMarks
@@ -65,11 +71,12 @@ export type UpdateBody = {
 };
 
 export type SetupRecoveryBody = {
-  guardians: { name: string; kind: string }[];
-  secret?: string;
-  threshold?: number;
-};
-
-export type ReconstructBody = {
-  submissions: { shardIndex: number; key: string }[];
+  threshold: number;
+  verificationTag: string;
+  guardians: {
+    name: string;
+    kind: string;
+    shardIndex: number;
+    encryptedShard: string;
+  }[];
 };

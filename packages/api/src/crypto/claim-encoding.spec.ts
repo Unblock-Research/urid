@@ -345,7 +345,7 @@ describe('numeric claims', () => {
         ...FULL_INPUT,
         numericClaims: { n: MAX_NUMERIC_CLAIM_VALUE - 1n },
       });
-      expect(claims.at(-1)!.value).toBe((MAX_NUMERIC_CLAIM_VALUE - 1n).toString(10));
+      expect(claims[claims.length - 1].value).toBe((MAX_NUMERIC_CLAIM_VALUE - 1n).toString(10));
     });
 
     it('rejects negatives and non-integers', () => {
