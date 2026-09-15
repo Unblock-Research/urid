@@ -31,6 +31,7 @@ import { Test } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../crypto/crypto.service';
 import { IssuerKeyService } from '../crypto/issuer-key.service';
+import { IssuerRegistryService } from '../crypto/issuer-registry.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { LocalLedgerService } from '../ledger/local-ledger.service';
 import { IdentityService } from '../modules/identity/identity.service';
@@ -70,6 +71,7 @@ beforeAll(
         PrismaService,
         CryptoService,
         IssuerKeyService,
+        IssuerRegistryService,
         // Bind the abstract LedgerService token to the real hash-chain implementation
         { provide: LedgerService, useClass: LocalLedgerService },
         IdentityService,

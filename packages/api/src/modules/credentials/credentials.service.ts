@@ -4,6 +4,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { LedgerService } from "../../ledger/ledger.service";
 import { CryptoService } from "../../crypto/crypto.service";
 import { IssuerKeyService } from "../../crypto/issuer-key.service";
+import { IssuerRegistryService } from "../../crypto/issuer-registry.service";
 import {
   buildClaimSet,
   encodeClaimsToLeaves,
@@ -36,6 +37,7 @@ export class CredentialsService {
     private ledger: LedgerService,
     private crypto: CryptoService,
     private issuerKey: IssuerKeyService,
+    private issuerRegistry: IssuerRegistryService,
   ) {}
 
   /**
@@ -141,14 +143,24 @@ export class CredentialsService {
    *
    * Algorithm (CRD-02):
    *   1. Load the SBT; return false if missing or crypto fields are absent.
-   *   2. Recompute the Merkle root from the STORED claims (same encoder as mint).
+   *   2. Require the stored issuerPublicKey to be a TRUSTED issuer key.
+   *   3. Recompute the Merkle root from the STORED claims (same encoder as mint).
    *      Any mutated claim changes the root → returns false (tamper-evidence).
-   *   3. Ed25519.verify(issuerSignature, rootMessageBytes(merkleRoot), issuerPublicKey).
+   *   4. Ed25519.verify(issuerSignature, rootMessageBytes(merkleRoot), issuerPublicKey).
    *      A signature not produced by the matching issuer private key → false.
    *
-   * Never throws; returns `{ valid: false }` on any failure path.
+   * Step 2 is what makes steps 3–4 mean anything. Verifying a signature against a
+   * public key that travels on the same row only proves the row is self-consistent:
+   * an attacker who can write the row re-signs the tampered claims with a key they
+   * control, stores that public key alongside, and the signature checks out. The
+   * registry lookup is the step that ties the credential to an issuer we trust
+   * rather than to whichever key the row happens to assert (critical finding #5).
+   *
+   * Never throws; returns `{ valid: false, reason }` on any failure path.
    */
-  async verifyCredential(id: string): Promise<{ valid: boolean }> {
+  async verifyCredential(
+    id: string,
+  ): Promise<{ valid: boolean; reason?: string }> {
     const sbt = await this.prisma.soulboundToken.findUnique({ where: { id } });
 
     // Guard: missing row or incomplete crypto fields
@@ -159,7 +171,14 @@ export class CredentialsService {
       !sbt.issuerSignature ||
       !sbt.issuerPublicKey
     ) {
-      return { valid: false };
+      return { valid: false, reason: "Credential not found or missing crypto fields" };
+    }
+
+    // Trust gate: the issuer key on the row must be one this deployment trusts.
+    // Checked BEFORE any signature work so an untrusted key can never pass on the
+    // strength of a signature it produced itself.
+    if (!this.issuerRegistry.isTrusted(sbt.issuerPublicKey)) {
+      return { valid: false, reason: "Issuer is not in the trusted issuer registry" };
     }
 
     // Recompute the root from STORED claims (tamper-evidence: T-05-02)
@@ -173,10 +192,10 @@ export class CredentialsService {
     const { root: recomputedRoot } = await this.crypto.buildMerkleTree(paddedLeaves);
 
     if (recomputedRoot !== sbt.merkleRoot) {
-      return { valid: false };
+      return { valid: false, reason: "Claims do not match the committed Merkle root" };
     }
 
-    // Verify Ed25519 signature against the stored issuer public key (T-05-03)
+    // Verify Ed25519 signature against the (now trust-gated) issuer public key (T-05-03)
     const sigBytes = hexToBytes(sbt.issuerSignature);
     const pubKeyBytes = hexToBytes(sbt.issuerPublicKey);
     const valid = await this.crypto.verify(
@@ -185,7 +204,9 @@ export class CredentialsService {
       pubKeyBytes,
     );
 
-    return { valid };
+    return valid
+      ? { valid: true }
+      : { valid: false, reason: "Issuer signature over root invalid" };
   }
 
   async listByDid(did: string) {

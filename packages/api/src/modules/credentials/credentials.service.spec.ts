@@ -3,6 +3,7 @@ import { bytesToHex } from '@noble/hashes/utils';
 import { CredentialsService } from './credentials.service';
 import { CryptoService } from '../../crypto/crypto.service';
 import { IssuerKeyService } from '../../crypto/issuer-key.service';
+import { IssuerRegistryService } from '../../crypto/issuer-registry.service';
 import {
   buildClaimSet,
   encodeClaimsToLeaves,
@@ -137,13 +138,40 @@ function makeService(
   fakeLedger: any,
   cryptoSvc?: any,
   issuerKeySvc?: any,
+  issuerRegistrySvc?: any,
 ): CredentialsService {
   return new (CredentialsService as any)(
     fakePrisma,
     fakeLedger,
     cryptoSvc,
     issuerKeySvc,
+    // Default to a registry that trusts exactly the signing key, which is the
+    // production default when TRUSTED_ISSUER_KEYS is unset.
+    issuerRegistrySvc ?? makeRegistryTrusting(issuerKeySvc),
   ) as CredentialsService;
+}
+
+/**
+ * Build a real IssuerRegistryService whose trusted set is the given issuer key.
+ * Passing an explicit `trusted` list overrides it (used by the untrusted-key test).
+ */
+function makeRegistryTrusting(issuerKeySvc?: any, trusted?: string[]) {
+  const savedEnv = process.env.TRUSTED_ISSUER_KEYS;
+  if (trusted !== undefined) {
+    process.env.TRUSTED_ISSUER_KEYS = trusted.join(',');
+  } else {
+    delete process.env.TRUSTED_ISSUER_KEYS;
+  }
+  const registry = new IssuerRegistryService(
+    issuerKeySvc ?? ({ getPublicKeyHex: () => '00'.repeat(32) } as any),
+  );
+  registry.onModuleInit();
+  if (savedEnv === undefined) {
+    delete process.env.TRUSTED_ISSUER_KEYS;
+  } else {
+    process.env.TRUSTED_ISSUER_KEYS = savedEnv;
+  }
+  return registry;
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +369,103 @@ describe('CredentialsService', () => {
       const result = await svc.verifyCredential('sbt-uuid-001');
 
       expect(result.valid).toBe(false);
+    });
+
+    // ── Critical finding #5: self-attested issuer ────────────────────────────
+    //
+    // The attack the old code could not detect: an attacker who can write the SBT
+    // row rewrites the claims, recomputes the Merkle root, signs that root with a
+    // keypair THEY control, and stores their own public key in issuerPublicKey.
+    // Every internal check passes — the claims hash to the root, and the signature
+    // is valid for the key on the row. Only a trusted-issuer registry catches it.
+    it('returns { valid: false } when claims are re-signed by an untrusted issuer key (finding #5)', async () => {
+      const { cryptoSvc, issuerKeySvc } = await makeRealCryptoServices();
+      const fakePrisma = makeInMemoryPrisma();
+      const fakeLedger = makeFakeLedger();
+      const svc = makeService(fakePrisma, fakeLedger, cryptoSvc, issuerKeySvc);
+
+      await svc.mint(MINT_DATA);
+      const row = fakePrisma._store['sbt-uuid-001'];
+
+      // Attacker rewrites a claim...
+      const forgedClaims = (row.claims as any[]).map((c) =>
+        c.name === 'title' ? { ...c, value: 'Forged Fellowship' } : c,
+      );
+      // ...recomputes the root over the forged claims...
+      const forgedLeaves = encodeClaimsToLeaves(forgedClaims as any);
+      const padded = [...forgedLeaves];
+      while (padded.length < 16) padded.push(0n);
+      const { root: forgedRoot } = await buildMerkleTree(padded);
+
+      // ...and signs it with a keypair they control.
+      const attackerKeys = await cryptoSvc.generateKeypair();
+      const forgedSig = await cryptoSvc.sign(
+        new TextEncoder().encode(forgedRoot),
+        attackerKeys.privateKey,
+      );
+
+      row.claims = forgedClaims;
+      row.merkleRoot = forgedRoot;
+      row.issuerSignature = bytesToHex(forgedSig);
+      row.issuerPublicKey = bytesToHex(attackerKeys.publicKey);
+
+      // Sanity: the forgery IS internally consistent — root matches claims and
+      // the signature is valid for the key on the row. Without the registry this
+      // would verify as genuine.
+      const selfConsistent = await cryptoSvc.verify(
+        forgedSig,
+        new TextEncoder().encode(forgedRoot),
+        attackerKeys.publicKey,
+      );
+      expect(selfConsistent).toBe(true);
+
+      const result = await svc.verifyCredential('sbt-uuid-001');
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/trusted issuer registry/i);
+    });
+
+    it('accepts a credential whose issuer key is on an explicit TRUSTED_ISSUER_KEYS allowlist (finding #5)', async () => {
+      const { cryptoSvc, issuerKeySvc } = await makeRealCryptoServices();
+      const fakePrisma = makeInMemoryPrisma();
+      const fakeLedger = makeFakeLedger();
+      // Explicit allowlist containing exactly this issuer's key
+      const registry = makeRegistryTrusting(issuerKeySvc, [
+        issuerKeySvc.getPublicKeyHex(),
+      ]);
+      const svc = makeService(
+        fakePrisma,
+        fakeLedger,
+        cryptoSvc,
+        issuerKeySvc,
+        registry,
+      );
+
+      const minted = await svc.mint(MINT_DATA);
+      const result = await svc.verifyCredential(minted.id);
+
+      expect(result.valid).toBe(true);
+    });
+
+    it('rejects a genuine credential when the issuer is absent from an explicit allowlist (finding #5)', async () => {
+      const { cryptoSvc, issuerKeySvc } = await makeRealCryptoServices();
+      const fakePrisma = makeInMemoryPrisma();
+      const fakeLedger = makeFakeLedger();
+      // Allowlist naming some OTHER issuer — our signer is not on it
+      const registry = makeRegistryTrusting(issuerKeySvc, ['ab'.repeat(32)]);
+      const svc = makeService(
+        fakePrisma,
+        fakeLedger,
+        cryptoSvc,
+        issuerKeySvc,
+        registry,
+      );
+
+      const minted = await svc.mint(MINT_DATA);
+      const result = await svc.verifyCredential(minted.id);
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/trusted issuer registry/i);
     });
 
     it('returns { valid: false } for a credential missing crypto fields (CRD-02 incomplete)', async () => {
