@@ -27,6 +27,7 @@ import {
   rootMessageBytes,
   type Claim,
 } from "../../crypto/claim-encoding";
+import { canonicalize } from "../../ledger/canonical";
 
 // ── Circuit constants ──────────────────────────────────────────────────────
 
@@ -185,11 +186,20 @@ export class ZkProofsService {
       );
     }
 
-    // 12. Derive proofHash from proof output (NOT from stringified request payload)
-    //     Uses @noble/hashes sha256 over the public signal join — deterministic and
-    //     tied to the actual proof output, not the input request.
+    // 12. Derive proofHash from the FULL proof artifact, not just its public signals.
+    //
+    //     Hashing publicSignals alone (the previous behaviour) made proofHash a
+    //     function of [predicateResult, claimNameHash, root, threshold,
+    //     predicateEnabled] — every one of which is identical across repeated
+    //     proves of the same credential. Two proofs therefore collided on one
+    //     handle, and since verify() resolved that handle with findFirst, revoking
+    //     one row simply left its twin answering for it.
+    //
+    //     Groth16 proofs are randomised (fresh blinding scalars per invocation), so
+    //     including the proof points makes each handle unique to one proof row.
+    //     Canonical serialisation keeps the hash stable regardless of key order.
     const proofHash = bytesToHex(
-      sha256(new TextEncoder().encode(publicSignals.join("|"))),
+      sha256(new TextEncoder().encode(canonicalize({ proof, publicSignals }))),
     );
 
     // 13. Calculate expiry
@@ -256,12 +266,22 @@ export class ZkProofsService {
    * Never throws; every failure path returns { valid: false, reason }.
    */
   async verify(proofHash: string): Promise<{ valid: boolean; reason?: string }> {
-    // Load the active proof row
-    const proofRow = await this.prisma.zkProof.findFirst({
-      where: { proofHash, status: "active" },
+    // Resolve the proof handle to exactly one row.
+    //
+    // findUnique (backed by the @unique constraint on proofHash) replaces the
+    // previous findFirst({ proofHash, status: 'active' }): with colliding hashes
+    // that query silently skipped over a revoked row and answered from an active
+    // twin, so revocation could be bypassed. Now the handle names one row, and its
+    // status is reported rather than filtered away — a revoked proof says so
+    // instead of masquerading as "not found".
+    const proofRow = await this.prisma.zkProof.findUnique({
+      where: { proofHash },
     });
     if (!proofRow) {
-      return { valid: false, reason: "Proof not found or expired" };
+      return { valid: false, reason: "Proof not found" };
+    }
+    if (proofRow.status !== "active") {
+      return { valid: false, reason: `Proof ${proofRow.status}` };
     }
 
     // Expiry check (keep existing status-management logic)

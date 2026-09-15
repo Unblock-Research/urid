@@ -85,7 +85,10 @@ model ZkProof {
   appName        String
   claims         Json
   consentWindow  String
-  proofHash      String
+  // Unique: proofHash is the handle a relying party presents to verify(). Without
+  // this constraint two proofs could share a handle and revoking one left the
+  // other answering for it (critical finding #2).
+  proofHash      String   @unique
   status         String   @default("active")
   createdAt      DateTime @default(now())
   expiresAt      DateTime?

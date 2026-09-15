@@ -59,6 +59,7 @@ const mockPrisma = {
   },
   zkProof: {
     create: vi.fn(),
+    findUnique: vi.fn(),
     findFirst: vi.fn(),
     update: vi.fn().mockResolvedValue({}),
   },
@@ -123,6 +124,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
         return row;
       });
 
+      mockPrisma.zkProof.findUnique.mockImplementation(async () => lastCreatedProof);
       mockPrisma.zkProof.findFirst.mockImplementation(async () => lastCreatedProof);
 
       // ── Step 3: Build NestJS test module ──────────────────────────────────
@@ -237,7 +239,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
       if (!lastCreatedProof) throw new Error('lastCreatedProof not populated');
       const tamperedSignals = [...(lastCreatedProof.publicSignals as string[])];
       tamperedSignals[1] = '12345678'; // bogus root decimal
-      mockPrisma.zkProof.findFirst.mockResolvedValueOnce({
+      mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
         ...lastCreatedProof,
         publicSignals: tamperedSignals,
       });
@@ -246,6 +248,59 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
     },
     30_000,
   );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Critical finding #2: proofHash must identify exactly one proof
+  //
+  // The old derivation hashed publicSignals alone. Every public signal is
+  // identical across repeated proofs of one credential, so two proofs collided on
+  // a single handle — and because verify() resolved that handle with findFirst,
+  // revoking one row left its twin answering in its place.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('finding #2: two proofs over the same credential and claim get different handles', async () => {
+    const first = proveResult.proofHash as string;
+
+    const second = (await service.prove({
+      credentialId: CREDENTIAL_ID,
+      disclosedClaimName: 'fieldOfStudy',
+      appName: 'test-app-zkp',
+      consentWindow: 'forever',
+      predicateEnabled: false,
+    })) as Record<string, unknown>;
+
+    // Same credential, same claim, same options — identical public signals...
+    expect((second.publicSignals as string[]).join('|')).toBe(
+      (proveResult.publicSignals as string[]).join('|'),
+    );
+    // ...but distinct handles, because the randomised Groth16 proof is hashed too.
+    expect(second.proofHash).not.toBe(first);
+
+    // Restore the shared fixture for the tests that follow.
+    lastCreatedProof = proveResult as Record<string, unknown>;
+  }, 60_000);
+
+  it('finding #2: a revoked proof reports its status instead of verifying', async () => {
+    mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
+      ...(lastCreatedProof as Record<string, unknown>),
+      status: 'revoked',
+    });
+
+    const result = await service.verify(proveResult.proofHash as string);
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/revoked/i);
+  }, 30_000);
+
+  it('finding #2: verify() resolves the handle with findUnique, not findFirst', async () => {
+    // findFirst({ proofHash, status: 'active' }) is what allowed a revoked row to
+    // be skipped in favour of an active twin. Pin the query shape so the bypass
+    // cannot reappear.
+    const servicePath = path.resolve(__dirname, './zk-proofs.service.ts');
+    const source = fs.readFileSync(servicePath, 'utf8');
+    expect(source).not.toMatch(/zkProof\.findFirst/);
+    expect(source).toMatch(/zkProof\.findUnique/);
+  });
 
   // ─────────────────────────────────────────────────────────────────────────
   // Critical finding #4: revocation must be honoured by the proof path
