@@ -371,6 +371,30 @@ describe('CredentialsService', () => {
       expect(result.valid).toBe(false);
     });
 
+    // ── Critical finding #4: revocation ──────────────────────────────────────
+    //
+    // A revoked credential is still a well-formed signed object: its claims hash
+    // to the committed root and the issuer signature is still valid. Only an
+    // explicit check honours the issuer's after-the-fact revocation.
+    it('returns { valid: false } once the credential is revoked (finding #4)', async () => {
+      const { cryptoSvc, issuerKeySvc } = await makeRealCryptoServices();
+      const fakePrisma = makeInMemoryPrisma();
+      const fakeLedger = makeFakeLedger();
+      const svc = makeService(fakePrisma, fakeLedger, cryptoSvc, issuerKeySvc);
+
+      const minted = await svc.mint(MINT_DATA);
+
+      // Valid before revocation...
+      expect((await svc.verifyCredential(minted.id)).valid).toBe(true);
+
+      // ...and invalid after, with the crypto otherwise untouched.
+      fakePrisma._store['sbt-uuid-001'].revoked = true;
+
+      const result = await svc.verifyCredential(minted.id);
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/revoked/i);
+    });
+
     // ── Critical finding #5: self-attested issuer ────────────────────────────
     //
     // The attack the old code could not detect: an attacker who can write the SBT

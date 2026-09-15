@@ -248,6 +248,52 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
   );
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Critical finding #4: revocation must be honoured by the proof path
+  //
+  // A Groth16 proof and an Ed25519 signature are both permanently valid once
+  // generated — neither encodes whether the credential is still in good standing.
+  // These tests pin the explicit revocation check that makes revocation
+  // enforceable through proofs.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('finding #4: verify() returns valid:false once the credential is revoked', async () => {
+    const wasRevoked = mockSbt.revoked;
+    try {
+      mockSbt.revoked = true;
+      const result = await service.verify(proveResult.proofHash as string);
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/revoked/i);
+    } finally {
+      mockSbt.revoked = wasRevoked;
+    }
+  }, 30_000);
+
+  it('finding #4: the same proof verifies again once the credential is un-revoked', async () => {
+    // Guards against the revocation check being conflated with an unrelated
+    // failure — the proof itself is still cryptographically sound.
+    const result = await service.verify(proveResult.proofHash as string);
+    expect(result.valid).toBe(true);
+  }, 30_000);
+
+  it('finding #4: prove() refuses to mint a new proof over a revoked credential', async () => {
+    const wasRevoked = mockSbt.revoked;
+    try {
+      mockSbt.revoked = true;
+      await expect(
+        service.prove({
+          credentialId: CREDENTIAL_ID,
+          disclosedClaimName: 'fieldOfStudy',
+          appName: 'test-app-zkp',
+          consentWindow: 'forever',
+          predicateEnabled: false,
+        }),
+      ).rejects.toThrow(/revoked/i);
+    } finally {
+      mockSbt.revoked = wasRevoked;
+    }
+  }, 30_000);
+
+  // ─────────────────────────────────────────────────────────────────────────
   // ZKP-05: static — no legacy sha256+stringify pattern
   // ─────────────────────────────────────────────────────────────────────────
 

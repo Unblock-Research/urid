@@ -174,6 +174,15 @@ export class CredentialsService {
       return { valid: false, reason: "Credential not found or missing crypto fields" };
     }
 
+    // Revocation gate (critical finding #4). A revoked credential is still a
+    // perfectly well-formed signed object — its claims still hash to the root and
+    // the issuer signature is still valid — so nothing downstream would reject it.
+    // Revocation is a statement the issuer makes AFTER signing, and only an
+    // explicit check honours it.
+    if (sbt.revoked) {
+      return { valid: false, reason: "Credential has been revoked" };
+    }
+
     // Trust gate: the issuer key on the row must be one this deployment trusts.
     // Checked BEFORE any signature work so an untrusted key can never pass on the
     // strength of a signature it produced itself.

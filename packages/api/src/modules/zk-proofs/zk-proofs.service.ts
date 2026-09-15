@@ -99,6 +99,13 @@ export class ZkProofsService {
       );
     }
 
+    // Refuse to mint new proofs over a revoked credential (critical finding #4).
+    // verify() rejects them too, but failing here avoids handing out a proof
+    // handle that can never verify.
+    if (sbt.revoked) {
+      throw new Error("Credential has been revoked — cannot generate a proof");
+    }
+
     // 2. Decode the stored ordered claim set
     const storedClaims = sbt.claims as unknown as Claim[];
 
@@ -302,6 +309,15 @@ export class ZkProofsService {
     });
     if (!sbt || !sbt.issuerSignature || !sbt.issuerPublicKey) {
       return { valid: false, reason: "Credential not found" };
+    }
+
+    // Revocation gate (critical finding #4). The SNARK and the issuer signature
+    // both remain valid forever once generated — they say nothing about whether
+    // the underlying credential is still in good standing. Without this check a
+    // proof minted before revocation keeps verifying indefinitely, which makes
+    // credential revocation unenforceable through the proof path.
+    if (sbt.revoked) {
+      return { valid: false, reason: "Credential has been revoked" };
     }
 
     // 4. Root binding: publicSignals[1] hex must equal the stored merkleRoot
