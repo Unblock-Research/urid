@@ -6,11 +6,27 @@
  * leaf values it feeds into the Poseidon Merkle tree are byte-identical to the
  * values stored on-chain at credential mint time.
  *
- * Leaf-encoding rule (CRYPTO-NOTES.md section 3):
- *   leafValue = BigInt( sha256( canonicalJSON({ name, value }) ) ) mod BN254_FIELD_PRIME
+ * Leaf-encoding rule (CRYPTO-NOTES.md section 3) — v2, see BREAKING CHANGE below:
+ *   nameHash  = BigInt(sha256("urid:claim-name:"  + name))  mod BN254_FIELD_PRIME
+ *   valueHash = BigInt(sha256("urid:claim-value:" + value)) mod BN254_FIELD_PRIME
+ *   leafValue = poseidon([nameHash, valueHash])
  *
  * The encoder returns raw leaf *values* (mod-p bigints).  buildMerkleTree
  * applies poseidon([leafValue]) internally — callers must NOT pre-hash.
+ *
+ * BREAKING CHANGE (critical finding #3):
+ *   v1 encoded a claim as a single opaque digest of {name, value} together. That
+ *   left the circuit with nothing it could expose about WHICH claim was proven:
+ *   leafValue was private, and no public signal named the claim, so a proof only
+ *   established "some leaf is in this tree" — satisfiable with a padding zero.
+ *
+ *   Splitting the claim into a name half and a value half lets the circuit take
+ *   nameHash as a PUBLIC input and valueHash as a private one, recombining them
+ *   in-circuit. A verifier then learns which claim was proven while the value
+ *   stays hidden — the selective-disclosure property the system claims.
+ *
+ *   Roots computed under v1 do not match v2. Credentials minted before this
+ *   change must be re-minted; there is no in-place migration.
  *
  * Design constraints:
  *  - No NestJS or Prisma imports — standalone so Phase 6 can import it directly.
@@ -22,7 +38,7 @@
 
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
-import { canonicalize } from '../ledger/canonical';
+import { poseidonHash } from './merkle';
 
 // ── BN254 field prime ─────────────────────────────────────────────────────────
 
@@ -97,34 +113,78 @@ export function buildClaimSet(input: ClaimSetInput): Claim[] {
   return claims;
 }
 
-// ── claimToFieldElement ───────────────────────────────────────────────────────
+// ── Domain-separated SHA-256 → field element ─────────────────────────────────
 
 /**
- * Encode a single { name, value } claim as a BN254 field element.
+ * Domain separation tags.
  *
- * Algorithm (CRYPTO-NOTES.md section 3):
- *   1. Canonicalize the claim object with stable-key-order JSON.
- *   2. Compute the SHA-256 hash of the UTF-8 encoded canonical string.
- *   3. Interpret the 32-byte hash as a big-endian unsigned integer.
- *   4. Reduce modulo BN254_FIELD_PRIME to bring the value into [0, p).
+ * Name and value halves are hashed under distinct prefixes so a claim whose
+ * VALUE happens to equal another claim's NAME cannot produce a matching digest.
+ * Poseidon's argument order already separates the two positions; these tags make
+ * the separation hold at the digest level too, independent of that ordering.
+ */
+const NAME_DOMAIN = 'urid:claim-name:';
+const VALUE_DOMAIN = 'urid:claim-value:';
+
+/**
+ * SHA-256 a domain-tagged string and reduce it into the BN254 scalar field.
+ *
+ *   1. UTF-8 encode `tag + input`.
+ *   2. SHA-256.
+ *   3. Interpret the 32-byte digest as a big-endian unsigned integer.
+ *   4. Reduce mod BN254_FIELD_PRIME into [0, p).
+ */
+function hashToField(tag: string, input: string): bigint {
+  const hashBytes = sha256(new TextEncoder().encode(tag + input));
+  return BigInt('0x' + bytesToHex(hashBytes)) % BN254_FIELD_PRIME;
+}
+
+/**
+ * Encode a claim NAME as a BN254 field element.
+ *
+ * This is the value the circuit exposes as a PUBLIC signal, so a verifier can
+ * confirm which claim a proof is about. Callers verifying a proof recompute it
+ * from the claim name they were told and compare against the proof's signal.
+ *
+ * @param name  Claim name, e.g. "fieldOfStudy".
+ * @returns     BigInt in [0, BN254_FIELD_PRIME).
+ */
+export function claimNameHash(name: string): bigint {
+  return hashToField(NAME_DOMAIN, name);
+}
+
+/**
+ * Encode a claim VALUE as a BN254 field element.
+ *
+ * Stays a PRIVATE circuit signal — this is the half the holder does not disclose.
+ *
+ * @param value  Claim value, e.g. "Computer Science".
+ * @returns      BigInt in [0, BN254_FIELD_PRIME).
+ */
+export function claimValueHash(value: string): bigint {
+  return hashToField(VALUE_DOMAIN, value);
+}
+
+// ── claimToLeafValue ──────────────────────────────────────────────────────────
+
+/**
+ * Encode a single { name, value } claim as its Merkle leaf VALUE.
+ *
+ *   leafValue = poseidon([claimNameHash(name), claimValueHash(value)])
+ *
+ * The circuit recomputes exactly this from its public nameHash and private
+ * valueHash, so the leaf a proof commits to is provably the named claim.
+ *
+ * Uses the shared Poseidon instance from ./merkle so JS and circom cannot drift.
  *
  * @param claim  { name, value } string pair.
  * @returns      BigInt in the range [0, BN254_FIELD_PRIME).
  */
-export function claimToFieldElement(claim: Claim): bigint {
-  // Canonicalize with stable key order (reuses ledger/canonical so Phase 6
-  // is byte-identical — do NOT inline a different serializer here).
-  const json = canonicalize({ name: claim.name, value: claim.value });
-
-  // SHA-256 hash of the UTF-8 canonical JSON bytes
-  const hashBytes = sha256(new TextEncoder().encode(json));
-
-  // Convert 32-byte hash to a hex string, then to a BigInt (big-endian)
-  const hashHex = bytesToHex(hashBytes);
-  const hashBigInt = BigInt('0x' + hashHex);
-
-  // Reduce mod p to guarantee the result is a valid BN254 field element
-  return hashBigInt % BN254_FIELD_PRIME;
+export async function claimToLeafValue(claim: Claim): Promise<bigint> {
+  return poseidonHash([
+    claimNameHash(claim.name),
+    claimValueHash(claim.value),
+  ]);
 }
 
 // ── encodeClaimsToLeaves ──────────────────────────────────────────────────────
@@ -134,13 +194,16 @@ export function claimToFieldElement(claim: Claim): bigint {
  *
  * The output can be passed directly to buildMerkleTree; each entry is a raw
  * leaf *value* (not a poseidon-hashed leaf) because buildMerkleTree applies
- * poseidon([leafValue]) internally.
+ * poseidon([leafValue]) internally. Keeping that split means merkle.ts and its
+ * tests are untouched by the v2 encoding — the circuit absorbs the extra hash.
+ *
+ * Async since v2: Poseidon is only available once circomlibjs has initialised.
  *
  * @param claims  Ordered claim array (as returned by buildClaimSet).
  * @returns       Parallel array of bigint leaf values in [0, BN254_FIELD_PRIME).
  */
-export function encodeClaimsToLeaves(claims: Claim[]): bigint[] {
-  return claims.map(claimToFieldElement);
+export async function encodeClaimsToLeaves(claims: Claim[]): Promise<bigint[]> {
+  return Promise.all(claims.map((c) => claimToLeafValue(c)));
 }
 
 // ── rootMessageBytes ──────────────────────────────────────────────────────────

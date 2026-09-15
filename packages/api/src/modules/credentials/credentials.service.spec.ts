@@ -287,7 +287,7 @@ describe('CredentialsService', () => {
       expect(storedClaims.length).toBeGreaterThan(0);
 
       const CIRCUIT_TREE_SIZE = 16; // must match CIRCUIT_DEPTH=4 constant in service
-      const leaves = encodeClaimsToLeaves(storedClaims);
+      const leaves = await encodeClaimsToLeaves(storedClaims);
       const paddedLeaves: bigint[] = [...leaves];
       while (paddedLeaves.length < CIRCUIT_TREE_SIZE) paddedLeaves.push(0n);
       const { root } = await buildMerkleTree(paddedLeaves);
@@ -416,7 +416,7 @@ describe('CredentialsService', () => {
         c.name === 'title' ? { ...c, value: 'Forged Fellowship' } : c,
       );
       // ...recomputes the root over the forged claims...
-      const forgedLeaves = encodeClaimsToLeaves(forgedClaims as any);
+      const forgedLeaves = await encodeClaimsToLeaves(forgedClaims as any);
       const padded = [...forgedLeaves];
       while (padded.length < 16) padded.push(0n);
       const { root: forgedRoot } = await buildMerkleTree(padded);

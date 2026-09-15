@@ -9,9 +9,14 @@
  *
  * verify(): runs snarkjs.groth16.verify(vKey, publicSignals, proof) AND
  * independently verifies the issuer's Ed25519 signature over the credential root
- * (publicSignals[1]) against the stored issuerPublicKey.  BOTH checks must pass
- * (ZKP-02, T-06-07, T-06-12).  The signature check stays OUTSIDE the circuit
- * (LOCKED constraint).
+ * against the stored issuerPublicKey.  BOTH checks must pass (ZKP-02, T-06-07,
+ * T-06-12).  The signature check stays OUTSIDE the circuit (LOCKED constraint).
+ *
+ * It additionally requires (critical findings #3 and #4):
+ *   - publicSignals[IDX_CLAIM_NAME_HASH] to match the hash of the disclosed claim
+ *     name on the proof row, so the proof attests a NAMED claim rather than
+ *     merely "some leaf in this tree"
+ *   - the bound credential not to be revoked
  */
 
 import { Injectable, Logger } from "@nestjs/common";
@@ -23,6 +28,8 @@ import * as snarkjs from "snarkjs";
 import * as path from "path";
 import * as fs from "fs";
 import {
+  claimNameHash,
+  claimValueHash,
   encodeClaimsToLeaves,
   rootMessageBytes,
   type Claim,
@@ -34,13 +41,15 @@ import { canonicalize } from "../../ledger/canonical";
 const CIRCUIT_DEPTH = 4;
 const TREE_SIZE = Math.pow(2, CIRCUIT_DEPTH); // 16 — must match MerkleInclusionProof(4)
 
-// Public signal indices (locked contract from Plan 02):
+// Public signal indices — v2 contract, asserted in circuit-artifacts.spec.ts:
 //   [0] predicateResult   (public output)
-//   [1] root              (first public input)
-//   [2] threshold         (second public input)
-//   [3] predicateEnabled  (third public input)
+//   [1] claimNameHash     (first public input)  — identifies WHICH claim
+//   [2] root              (second public input)
+//   [3] threshold         (third public input)
+//   [4] predicateEnabled  (fourth public input)
 const IDX_PREDICATE_RESULT = 0;
-const IDX_ROOT = 1;
+const IDX_CLAIM_NAME_HASH = 1;
+const IDX_ROOT = 2;
 
 @Injectable()
 export class ZkProofsService {
@@ -110,8 +119,8 @@ export class ZkProofsService {
     // 2. Decode the stored ordered claim set
     const storedClaims = sbt.claims as unknown as Claim[];
 
-    // 3. Encode to BN254 leaf values
-    const leafValues = encodeClaimsToLeaves(storedClaims);
+    // 3. Encode to BN254 leaf values (v2: poseidon([nameHash, valueHash]))
+    const leafValues = await encodeClaimsToLeaves(storedClaims);
 
     // 4. PRE-PAD to exactly TREE_SIZE (16) so the JS tree depth is fixed at 4
     //    (Pitfall 1: buildMerkleTree infers depth from input length; must supply
@@ -145,14 +154,18 @@ export class ZkProofsService {
 
     // 8. Build the snarkjs witness object (signal names must EXACTLY match .circom)
     //    All values must be decimal strings (Pattern 3 + Pattern 6)
+    //    The circuit rebuilds leafValue = poseidon([claimNameHash, claimValueHash])
+    //    internally, so we supply the two halves rather than the combined leaf.
+    const disclosedClaim = storedClaims[disclosedIndex];
     const witness = {
-      // Private signals
-      leafValue: paddedLeaves[disclosedIndex].toString(10),
+      // Private signals — the value half never leaves this process
+      claimValueHash: claimValueHash(disclosedClaim.value).toString(10),
       pathElements: inclusionProof.siblings.map((s) =>
         BigInt("0x" + s).toString(10),
       ),
       pathIndices: inclusionProof.pathBits.map((b) => b.toString()),
       // Public signals (also passed as input so fullProve can compute the output)
+      claimNameHash: claimNameHash(disclosedClaim.name).toString(10),
       root: BigInt("0x" + tree.root).toString(10),
       threshold: data.threshold ?? "0",
       predicateEnabled: data.predicateEnabled ? "1" : "0",
@@ -319,10 +332,30 @@ export class ZkProofsService {
 
     // 3. Load the bound credential using the credentialId stored in disclosedClaims
     const disclosedClaims = proofRow.disclosedClaims as
-      | { credentialId?: string }
+      | { credentialId?: string; claimName?: string }
       | null;
     if (!disclosedClaims?.credentialId) {
       return { valid: false, reason: "Proof missing credential linkage" };
+    }
+
+    // 3a. Claim binding (critical finding #3).
+    //
+    //     THIS is what makes the proof mean something specific. The SNARK proves
+    //     that a leaf built from publicSignals[IDX_CLAIM_NAME_HASH] and some
+    //     private value is a member of the tree. Recomputing that hash from the
+    //     claim name the proof row advertises, and requiring the two to match,
+    //     upgrades the statement from "some leaf is in this tree" to "the claim
+    //     named X is in this credential". Without it, disclosedClaims.claimName
+    //     is an unverified label a caller could set to anything.
+    if (!disclosedClaims.claimName) {
+      return { valid: false, reason: "Proof missing disclosed claim name" };
+    }
+    const expectedNameHash = claimNameHash(disclosedClaims.claimName).toString(10);
+    if (publicSignals[IDX_CLAIM_NAME_HASH] !== expectedNameHash) {
+      return {
+        valid: false,
+        reason: "Proof does not attest the claimed disclosed claim name",
+      };
     }
     const sbt = await this.prisma.soulboundToken.findUnique({
       where: { id: disclosedClaims.credentialId },

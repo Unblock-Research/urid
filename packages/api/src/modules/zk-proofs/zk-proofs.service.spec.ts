@@ -3,7 +3,7 @@
  *
  * Covers:
  *   ZKP-01  prove() produces a real Groth16 proof groth16.verify accepts
- *   ZKP-02  publicSignals[1] equals the stored credential root; verify() valid:true;
+ *   ZKP-02  publicSignals[2] equals the stored credential root; verify() valid:true;
  *           BOTH snark AND Ed25519 signature required (corrupt sig → valid:false)
  *   ZKP-03  non-member claim throws; tampered publicSignals → valid:false
  *   ZKP-05  static assertion: no sha256+stringify legacy pattern in service source
@@ -26,6 +26,8 @@ import { IssuerKeyService } from '../../crypto/issuer-key.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   buildClaimSet,
+  claimNameHash,
+  claimValueHash,
   encodeClaimsToLeaves,
   rootMessageBytes,
 } from '../../crypto/claim-encoding';
@@ -39,6 +41,11 @@ const CIRCUITS_DIR = path.resolve(__dirname, '../../../circuits');
 const VKEY_PATH = path.join(CIRCUITS_DIR, 'verification_key.json');
 
 // ── Test constants ────────────────────────────────────────────────────────────
+
+// Public-signal indices — v2 contract (see circuit-artifacts.spec.ts)
+const IDX_PREDICATE_RESULT = 0;
+const IDX_CLAIM_NAME_HASH = 1;
+const IDX_ROOT = 2;
 
 const CREDENTIAL_ID = 'test-credential-id-zkp-001';
 const RESEARCHER_ID = 'test-researcher-id-zkp-001';
@@ -95,7 +102,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
       });
 
       // Encode to BN254 field elements and pre-pad to 16 (circuit depth = 4)
-      const leaves = encodeClaimsToLeaves(claims);
+      const leaves = await encodeClaimsToLeaves(claims);
       const paddedLeaves: bigint[] = [...leaves];
       while (paddedLeaves.length < TREE_SIZE) paddedLeaves.push(0n);
 
@@ -163,9 +170,9 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
     expect(proof.protocol).toBe('groth16');
   });
 
-  it('ZKP-01: prove() returns publicSignals with length === 4', () => {
+  it('ZKP-01: prove() returns publicSignals with length === 5 (v2 adds claimNameHash)', () => {
     const publicSignals = proveResult.publicSignals as string[];
-    expect(publicSignals).toHaveLength(4);
+    expect(publicSignals).toHaveLength(5);
   });
 
   it(
@@ -186,9 +193,9 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
   // ZKP-02: root binding + full verify() round-trip
   // ─────────────────────────────────────────────────────────────────────────
 
-  it('ZKP-02: publicSignals[1] (decimal root) converts to the stored credential merkleRoot', () => {
+  it('ZKP-02: publicSignals[IDX_ROOT] (decimal root) converts to the stored credential merkleRoot', () => {
     const publicSignals = proveResult.publicSignals as string[];
-    const rootFromSignal = BigInt(publicSignals[1]).toString(16);
+    const rootFromSignal = BigInt(publicSignals[IDX_ROOT]).toString(16);
     expect(rootFromSignal).toBe(mockSbt.merkleRoot as string);
   });
 
@@ -234,11 +241,11 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
   });
 
   it(
-    'ZKP-03: tampered publicSignals[1] (root) → groth16.verify fails → verify() returns valid:false',
+    'ZKP-03: tampered publicSignals[IDX_ROOT] → groth16.verify fails → verify() returns valid:false',
     async () => {
       if (!lastCreatedProof) throw new Error('lastCreatedProof not populated');
       const tamperedSignals = [...(lastCreatedProof.publicSignals as string[])];
-      tamperedSignals[1] = '12345678'; // bogus root decimal
+      tamperedSignals[IDX_ROOT] = '12345678'; // bogus root decimal
       mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
         ...lastCreatedProof,
         publicSignals: tamperedSignals,
@@ -248,6 +255,86 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
     },
     30_000,
   );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Critical finding #3: the proof must attest WHICH claim it is about
+  //
+  // Before v2, leafValue was private and no public signal named the claim, so a
+  // valid proof said only "some leaf is in this tree" — true for any holder, and
+  // satisfiable with one of the padding zeros. disclosedClaims.claimName was an
+  // unverified label. These tests pin the binding that replaced it.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('finding #3: the proven claim name is recoverable from the public signals', () => {
+    const publicSignals = proveResult.publicSignals as string[];
+    expect(publicSignals[IDX_CLAIM_NAME_HASH]).toBe(
+      claimNameHash('fieldOfStudy').toString(10),
+    );
+  });
+
+  it('finding #3: the claim VALUE is not recoverable from the public signals', () => {
+    // Selective disclosure: the name is public, the value is not. The value hash
+    // must appear nowhere in the public output.
+    const publicSignals = proveResult.publicSignals as string[];
+    const valueHash = claimValueHash('Computer Science').toString(10);
+    expect(publicSignals).not.toContain(valueHash);
+  });
+
+  it('finding #3: verify() rejects a proof relabelled as a different claim', async () => {
+    // The attack the binding closes: take a genuine proof and change the claim
+    // name recorded next to it, so a relying party is told the proof attests
+    // something it does not.
+    mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
+      ...(lastCreatedProof as Record<string, unknown>),
+      disclosedClaims: {
+        ...((lastCreatedProof as Record<string, unknown>)
+          .disclosedClaims as Record<string, unknown>),
+        claimName: 'title', // genuine proof, dishonest label
+      },
+    });
+
+    const result = await service.verify(proveResult.proofHash as string);
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/disclosed claim name/i);
+  }, 30_000);
+
+  it('finding #3: verify() rejects a proof with no disclosed claim name at all', async () => {
+    mockPrisma.zkProof.findUnique.mockResolvedValueOnce({
+      ...(lastCreatedProof as Record<string, unknown>),
+      disclosedClaims: { credentialId: CREDENTIAL_ID },
+    });
+
+    const result = await service.verify(proveResult.proofHash as string);
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/claim name/i);
+  }, 30_000);
+
+  it('finding #3: a proof for a different claim carries a different name hash', async () => {
+    const other = (await service.prove({
+      credentialId: CREDENTIAL_ID,
+      disclosedClaimName: 'title',
+      appName: 'test-app-zkp',
+      consentWindow: 'forever',
+      predicateEnabled: false,
+    })) as Record<string, unknown>;
+
+    const otherSignals = other.publicSignals as string[];
+    const originalSignals = proveResult.publicSignals as string[];
+
+    expect(otherSignals[IDX_CLAIM_NAME_HASH]).toBe(
+      claimNameHash('title').toString(10),
+    );
+    expect(otherSignals[IDX_CLAIM_NAME_HASH]).not.toBe(
+      originalSignals[IDX_CLAIM_NAME_HASH],
+    );
+    // Same credential, so the root is shared — only the claim identity differs.
+    expect(otherSignals[IDX_ROOT]).toBe(originalSignals[IDX_ROOT]);
+
+    // Restore the shared fixture for the tests that follow.
+    lastCreatedProof = proveResult as Record<string, unknown>;
+  }, 60_000);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Critical finding #2: proofHash must identify exactly one proof

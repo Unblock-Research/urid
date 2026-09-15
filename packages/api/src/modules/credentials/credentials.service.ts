@@ -102,7 +102,7 @@ export class CredentialsService {
     // committed circuit and the TREE_SIZE constant in ZkProofsService.prove().
     // Without this, prove() pads to 16 internally and computes a root that
     // disagrees with the shallower root stored here (depth-mismatch defect).
-    const leaves = encodeClaimsToLeaves(claims);
+    const leaves = await encodeClaimsToLeaves(claims);
     const paddedLeaves: bigint[] = [...leaves];
     while (paddedLeaves.length < CIRCUIT_TREE_SIZE) paddedLeaves.push(0n);
     const { root: merkleRoot } = await this.crypto.buildMerkleTree(paddedLeaves);
@@ -195,7 +195,7 @@ export class CredentialsService {
     // Must apply the same CIRCUIT_TREE_SIZE padding as mint() so the
     // recomputed root matches the stored root for untampered credentials.
     const storedClaims = sbt.claims as unknown as Claim[];
-    const leaves = encodeClaimsToLeaves(storedClaims);
+    const leaves = await encodeClaimsToLeaves(storedClaims);
     const paddedLeaves: bigint[] = [...leaves];
     while (paddedLeaves.length < CIRCUIT_TREE_SIZE) paddedLeaves.push(0n);
     const { root: recomputedRoot } = await this.crypto.buildMerkleTree(paddedLeaves);

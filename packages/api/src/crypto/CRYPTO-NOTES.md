@@ -35,16 +35,47 @@ This keeps the circom witness structure simple and matches circomlib's standard
 ## 3. Leaf Encoding
 
 ```
-leafHash = poseidon([leafValue])
+leafHash  = poseidon([leafValue])
+leafValue = poseidon([claimNameHash, claimValueHash])        <- v2
+claimNameHash  = sha256("urid:claim-name:"  + name)  mod p
+claimValueHash = sha256("urid:claim-value:" + value) mod p
 ```
 
 - `leafValue` must be a BigInt in the range `[0, p)` (any BN254 field element).
 - The single-element poseidon call corresponds to `poseidon(1)` in circom
-  notation (one input).
-- Callers are responsible for encoding application data (strings, JSON claim
-  sets, etc.) as a canonical field element *before* calling `buildMerkleTree`.
-  A standard approach is to compute a truncated SHA-256 / keccak256 of the
-  canonical-JSON serialisation and reduce the result mod `p`.
+  notation (one input). `buildMerkleTree` applies it internally, so callers pass
+  raw leaf *values* and must NOT pre-hash.
+- `claim-encoding.ts` owns the v2 rule above; the circuit reimplements exactly it.
+
+### ⚠ BREAKING CHANGE — v1 → v2 (critical finding #3)
+
+**v1 was:**
+
+```
+leafValue = sha256(canonicalJSON({ name, value })) mod p
+```
+
+One opaque digest per claim. Because `leafValue` was a *private* circuit signal
+and no public signal named the claim, a valid proof asserted nothing more than
+"the prover knows some leaf under this root" — a bar any credential holder
+clears, and one that a padding zero also satisfies. The claim name stored next to
+the proof was database metadata that the proof did not attest.
+
+**v2 splits the claim in two** so the circuit can publish the name half
+(`claimNameHash`, a public input) while the value half (`claimValueHash`) stays
+private, recombining them in-circuit. A verifier recomputes the hash of the claim
+name it was told and compares it to the proof's public signal — upgrading the
+statement to "the claim named X is in this credential", without revealing X's
+value.
+
+Domain-separation tags (`urid:claim-name:` / `urid:claim-value:`) keep the two
+halves distinct at the digest level, so a claim whose value equals another
+claim's name cannot produce a matching hash in the wrong role.
+
+**Migration:** roots computed under v1 do not match v2. There is no in-place
+migration — re-signing existing rows would mean the issuer vouching again for
+claims it may not have issued. Credentials minted before this change must be
+**re-minted**, and proofs over them regenerated.
 
 ---
 
@@ -136,12 +167,32 @@ root.padStart(64, '0')
 
 ## 8. Circuit Boundary — What Is and Is NOT Proven Inside Phase 6
 
-**Inside the Phase 6 circom circuit (proven in zero knowledge):**
+**Inside the circom circuit (proven in zero knowledge):**
 
-1. Merkle membership: the prover knows a leaf `v` whose hash is in the
-   committed Merkle tree (i.e. there exists a valid inclusion proof).
-2. Numeric predicates over disclosed claim fields (e.g. age ≥ 18, country ∈
-   {US, CA}).
+1. Leaf reconstruction: `leafValue = poseidon([claimNameHash, claimValueHash])`,
+   binding the *public* claim name to the *private* claim value (v2).
+2. Merkle membership: the leaf built from those two halves is in the committed
+   Merkle tree (i.e. there exists a valid inclusion proof).
+3. A numeric predicate over `claimValueHash`.
+
+   ⚠ The predicate compares a SHA-256-derived hash against a threshold, which is
+   not a meaningful numeric statement about the claim's value. It is carried
+   forward unchanged from v1 and should be treated as **advisory** until a real
+   numeric-claim encoding exists. `verify()` also does not bind the stored
+   threshold to `publicSignals[3]`.
+
+**Public signals, in witness order:**
+
+```
+[0] predicateResult   (output)
+[1] claimNameHash     (input)  <- identifies WHICH claim, added in v2
+[2] root              (input)
+[3] threshold         (input)
+[4] predicateEnabled  (input)
+```
+
+This ordering is asserted with distinct probe values in
+`circuit-artifacts.spec.ts` rather than assumed.
 
 **Outside the circuit (verified by the on-chain / off-chain verifier in
 plain code, NOT proven in ZK):**
@@ -152,6 +203,13 @@ plain code, NOT proven in ZK):**
   field).  Instead the smart-contract or API verifier checks the Ed25519
   signature directly after validating the SNARK proof.
 - Credential schema validation, revocation status, and DID resolution.
+- **Issuer trust.** A signature is checked against the key stored on the
+  credential row, so it only proves the row is self-consistent.
+  `IssuerRegistryService` must additionally confirm that key is one the
+  deployment trusts (critical finding #5).
+- **Revocation.** Both a SNARK proof and an issuer signature stay valid forever
+  once generated; `verifyCredential()` and `verify()` check `revoked` explicitly
+  (critical finding #4).
 
 This boundary is a **locked Phase 6 design constraint** (01-CONTEXT.md).  Do
 not attempt to add signature verification inside the circuit without explicit
