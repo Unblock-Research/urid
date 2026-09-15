@@ -13,7 +13,7 @@
  * Groth16 proof is bound to a genuinely-signed credential root.
  */
 
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -21,6 +21,7 @@ import * as snarkjs from 'snarkjs';
 import { bytesToHex } from '@noble/hashes/utils';
 
 import { ZkProofsService } from './zk-proofs.service';
+import { ProverPool } from './prover.pool';
 import { CryptoService } from '../../crypto/crypto.service';
 import { IssuerKeyService } from '../../crypto/issuer-key.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -60,6 +61,7 @@ let mockSbt: Record<string, unknown>;
 let numericSbt: Record<string, unknown>;
 let lastCreatedProof: Record<string, unknown> | null = null;
 let proveResult: Record<string, unknown>;
+let proverPool: ProverPool;
 
 // ── Mock PrismaService ────────────────────────────────────────────────────────
 
@@ -169,6 +171,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
       const moduleRef = await Test.createTestingModule({
         providers: [
           ZkProofsService,
+          ProverPool,
           CryptoService,
           IssuerKeyService,
           { provide: PrismaService, useValue: mockPrisma },
@@ -177,6 +180,7 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
 
       await moduleRef.init();
       service = moduleRef.get(ZkProofsService);
+      proverPool = moduleRef.get(ProverPool);
 
       // ── Step 4: Run prove() once for all subsequent test cases ────────────
       // This is the expensive Groth16 step (~1-5 s).
@@ -190,6 +194,11 @@ describe('ZkProofsService — real Groth16 ZKP suite', () => {
     },
     60_000, // 60 s — Groth16 fullProve can take up to 5 s
   );
+
+  afterAll(async () => {
+    // Terminate worker threads, otherwise the process stays alive.
+    await proverPool?.onModuleDestroy();
+  });
 
   // ─────────────────────────────────────────────────────────────────────────
   // ZKP-01: prove() produces a real Groth16 proof

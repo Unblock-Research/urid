@@ -37,6 +37,7 @@ import { LocalLedgerService } from '../ledger/local-ledger.service';
 import { IdentityService } from '../modules/identity/identity.service';
 import { CredentialsService } from '../modules/credentials/credentials.service';
 import { ZkProofsService } from '../modules/zk-proofs/zk-proofs.service';
+import { ProverPool } from '../modules/zk-proofs/prover.pool';
 
 // ── Test identifiers ──────────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ beforeAll(
         IdentityService,
         CredentialsService,
         ZkProofsService,
+        ProverPool,
       ],
     }).compile();
 
@@ -126,6 +128,9 @@ afterAll(
           });
       }
     } finally {
+      // Terminate proving child processes before disconnecting, or they outlive
+      // the suite and the runner never exits.
+      await moduleRef?.get(ProverPool)?.onModuleDestroy().catch(() => undefined);
       await prisma.$disconnect();
     }
   },

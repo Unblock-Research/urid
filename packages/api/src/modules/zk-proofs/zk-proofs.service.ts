@@ -19,7 +19,12 @@
  *   - the bound credential not to be revoked
  */
 
-import { ForbiddenException, Injectable, Logger } from "@nestjs/common";
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { CryptoService } from "../../crypto/crypto.service";
 import { sha256 } from "@noble/hashes/sha256";
@@ -36,6 +41,7 @@ import {
   type Claim,
 } from "../../crypto/claim-encoding";
 import { canonicalize } from "../../ledger/canonical";
+import { ProverBusyError, ProverPool } from "./prover.pool";
 
 // ── Circuit constants ──────────────────────────────────────────────────────
 
@@ -64,6 +70,7 @@ export class ZkProofsService {
   constructor(
     private prisma: PrismaService,
     private crypto: CryptoService,
+    private prover: ProverPool,
   ) {}
 
   // ── Path helpers ──────────────────────────────────────────────────────────
@@ -214,12 +221,27 @@ export class ZkProofsService {
       "merkle_inclusion_final.zkey",
     );
 
-    // 10. Generate real Groth16 proof via snarkjs fullProve (~1-5 s)
-    const { proof, publicSignals } = (await snarkjs.groth16.fullProve(
-      witness,
-      wasmPath,
-      zkeyPath,
-    )) as { proof: object; publicSignals: string[] };
+    // 10. Generate the Groth16 proof on a worker thread (~1-5 s of WASM).
+    //
+    //     Previously this ran inline, blocking Node's single thread for the whole
+    //     duration — so a few concurrent proofs stalled every other route, not
+    //     just this one. The pool also bounds concurrency and queue depth, and
+    //     sheds load with 503 rather than accumulating an invisible backlog
+    //     (high finding #3).
+    let proof: object;
+    let publicSignals: string[];
+    try {
+      const result = await this.prover.prove({ witness, wasmPath, zkeyPath });
+      proof = result.proof;
+      publicSignals = result.publicSignals;
+    } catch (err) {
+      if (err instanceof ProverBusyError) {
+        // 503 with a retry hint is the honest response to saturation; queueing
+        // further would just hide the overload from the caller.
+        throw new ServiceUnavailableException(err.message);
+      }
+      throw err;
+    }
 
     // 11. Self-verify before persisting (guard against circuit artifact corruption)
     const vkey = this.getVkey();
